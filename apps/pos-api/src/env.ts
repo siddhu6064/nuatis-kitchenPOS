@@ -12,6 +12,9 @@ const envSchema = z.object({
   POS_JWT_SECRET: z.string().min(32, "POS_JWT_SECRET must be at least 32 characters"),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20).optional(),
+  // Comma-separated list of allowed origins for CORS. Optional — if not set,
+  // CORS middleware is skipped (fine for Replit proxy; needed for local dev).
+  CORS_ALLOWED_ORIGINS: z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);

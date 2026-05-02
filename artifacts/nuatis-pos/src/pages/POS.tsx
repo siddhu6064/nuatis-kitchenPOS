@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useAuth } from "@workspace/replit-auth-web";
+import { useAuth } from "@/lib/api/AuthContext";
 import { MenuGrid } from "@/components/MenuGrid";
 import { CartSidebar } from "@/components/CartSidebar";
 import { CheckoutOverlay, type TipOption } from "@/components/checkout/CheckoutOverlay";
@@ -7,9 +7,10 @@ import { TipKeypad } from "@/components/checkout/TipKeypad";
 import { TapToPayScreen } from "@/components/checkout/TapToPayScreen";
 import { ApprovedScreen } from "@/components/checkout/ApprovedScreen";
 import { ReceiptScreen } from "@/components/checkout/ReceiptScreen";
-import { useCart } from "@/hooks/useCart";
+import { useOrder } from "@/hooks/useOrder";
 import { calcTipFromPct, calcGrandTotal } from "@/lib/tipMath";
 import { saveLastOrder, loadLastOrder, clearLastOrder, type LastOrder } from "@/lib/lastOrder";
+import type { ApiMenuItem } from "@/lib/api/types";
 
 type CheckoutStep = "cart" | "tip-select" | "tap-to-pay" | "approved" | "receipt";
 
@@ -20,8 +21,18 @@ const TIP_PCT: Record<Exclude<TipOption, "custom" | "none">, number> = {
 };
 
 export function POS() {
-  const { user, logout } = useAuth();
-  const { lines, addItem, incrementItem, decrementItem, removeItem, clearCart, totals, itemCount } = useCart();
+  const { displayName, signOut } = useAuth();
+  const {
+    lines,
+    addItem,
+    incrementItem,
+    decrementItem,
+    removeItem,
+    clearCart,
+    totals,
+    itemCount,
+    pay,
+  } = useOrder();
 
   const [step, setStep] = useState<CheckoutStep>("cart");
   const [selectedTip, setSelectedTip] = useState<TipOption>("18");
@@ -38,11 +49,6 @@ export function POS() {
 
   const grandTotal = calcGrandTotal(totals.subtotal, totals.tax, tipAmount);
 
-  const displayName =
-    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
-    user?.email ||
-    "Staff";
-
   // Handlers
   const handleCharge = () => setStep("tip-select");
   const handleBackToCart = () => setStep("cart");
@@ -50,10 +56,14 @@ export function POS() {
   const handleCancelPay = () => setStep("tip-select");
 
   const handleApproved = useCallback(() => {
+    const tipCents = Math.round(tipAmount * 100);
+    pay("card_mock", tipCents).catch((err: unknown) => {
+      console.error("Payment API error (prototype — proceeding anyway):", err);
+    });
     saveLastOrder(lines, totals.subtotal, totals.tax, tipAmount, grandTotal);
     setLastOrder(loadLastOrder());
     setStep("approved");
-  }, [lines, totals.subtotal, totals.tax, tipAmount, grandTotal]);
+  }, [lines, totals.subtotal, totals.tax, tipAmount, grandTotal, pay]);
 
   const handleViewReceipt = () => {
     const order = lastOrder ?? loadLastOrder();
@@ -91,6 +101,30 @@ export function POS() {
     setShowKeypad(false);
   };
 
+  const handleMenuTap = useCallback(
+    (item: ApiMenuItem) => {
+      void addItem(item);
+    },
+    [addItem]
+  );
+
+  const handleIncrement = useCallback(
+    (id: string) => { void incrementItem(id); },
+    [incrementItem]
+  );
+
+  const handleDecrement = useCallback(
+    (id: string) => { void decrementItem(id); },
+    [decrementItem]
+  );
+
+  const handleRemove = useCallback(
+    (id: string) => { void removeItem(id); },
+    [removeItem]
+  );
+
+  const handleClear = useCallback(() => { clearCart(); }, [clearCart]);
+
   return (
     <>
       {/* Main POS shell */}
@@ -117,7 +151,7 @@ export function POS() {
             )}
           </div>
 
-          {/* Right side: user info + DEMO badge + logout */}
+          {/* Right side: user info + DEMO badge + sign out */}
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-600 font-medium">{displayName}</span>
             <span
@@ -130,23 +164,23 @@ export function POS() {
               DEMO
             </span>
             <button
-              onClick={logout}
+              onClick={signOut}
               className="text-sm px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 active:bg-slate-100 transition-colors duration-100"
             >
-              Log out
+              Sign out
             </button>
           </div>
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          <MenuGrid onTap={addItem} />
+          <MenuGrid onTap={handleMenuTap} />
           <CartSidebar
             lines={lines}
             totals={totals}
-            onIncrement={incrementItem}
-            onDecrement={decrementItem}
-            onRemove={removeItem}
-            onClear={clearCart}
+            onIncrement={handleIncrement}
+            onDecrement={handleDecrement}
+            onRemove={handleRemove}
+            onClear={handleClear}
             onCharge={handleCharge}
           />
         </div>

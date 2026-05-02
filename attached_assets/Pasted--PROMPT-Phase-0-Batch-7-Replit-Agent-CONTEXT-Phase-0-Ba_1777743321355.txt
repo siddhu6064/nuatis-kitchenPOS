@@ -1,0 +1,188 @@
+▶ PROMPT [Phase 0 · Batch 7 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-6 complete: 9 migrations (multi-tenant + RLS + state machine), pos-api with full auth (/v1/auth/sign-in + /v1/auth/pin) and full CRUD (/v1/menu/* + /v1/orders/*). The throwaway tablet prototype at artifacts/nuatis-pos has a complete mock checkout UI but uses localStorage and 12 hardcoded items. This batch wires the prototype to the real API: replace mock data with live auth + menu tree + order submission. ALSO add CORS middleware to pos-api (first cross-origin client). Prototype status changes from "frozen reference" to "active integration testbed" — README updated to reflect this.
+
+GOAL
+End-to-end working demo in browser: open the prototype, sign in with PIN 1234, see seeded menu items pulled from API, build an order, send to kitchen, mock-pay, see Approved screen — all backed by real Postgres via the API. Zero localStorage for order state.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-api CORS + env additions
+═══════════════════════════════════════
+
+1. Add to apps/pos-api dependencies: cors@^2.8 + @types/cors
+
+2. apps/pos-api/.env.example — add:
+   CORS_ALLOWED_ORIGINS=http://localhost:5173 (note: "comma-separated list of origins; localhost:5173 is the prototype Vite dev server")
+
+3. apps/pos-api/src/env.ts — add CORS_ALLOWED_ORIGINS as required string with min length 1; parse comma-separated list to string[] in the export.
+
+4. apps/pos-api/src/index.ts — wire CORS middleware before routes:
+   - import cors from 'cors'
+   - app.use(cors({
+       origin: env.CORS_ALLOWED_ORIGINS,
+       credentials: false,  // we use Bearer header, no cookies
+       methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+       allowedHeaders: ['Content-Type', 'Authorization'],
+       maxAge: 86400,  // cache preflight for 24h
+     }))
+   - Order: request-id → cors → pino-http → express.json → routes → error-handler
+
+5. Update apps/pos-api/README.md to document CORS_ALLOWED_ORIGINS env var.
+
+═══════════════════════════════════════
+SECTION 2 — Tablet prototype API client
+═══════════════════════════════════════
+
+6. artifacts/nuatis-pos/src/lib/api/ — new folder with these files:
+
+7. artifacts/nuatis-pos/src/lib/api/client.ts:
+   - Reads VITE_API_BASE_URL from import.meta.env (default http://localhost:3002)
+   - Reads JWT from sessionStorage key 'pos.jwt' (NOT localStorage — sessionStorage clears on tab close, more appropriate for cashier session)
+   - Generic fetcher: request<T>(path, options) → Promise<T>
+     - Sets Authorization: Bearer <token> if JWT exists
+     - Content-Type: application/json
+     - Throws ApiError on non-2xx (with parsed { error: { code, message } } body)
+     - Returns parsed JSON typed as T
+   - Helpers: get<T>, post<T,Body>, patch<T,Body>, del(path)
+   - Export setJwt(token) and clearJwt() helpers
+
+8. artifacts/nuatis-pos/src/lib/api/auth.ts:
+   - signInWithPin(tenant_id, location_id, pin) → calls POST /v1/auth/pin → stores token via setJwt → returns parsed response
+   - signOut() → clears JWT from sessionStorage
+   - Uses types imported from a local copy of pos-shared schemas (since the prototype is in a different workspace — see section 4)
+
+9. artifacts/nuatis-pos/src/lib/api/menu.ts:
+   - getMenuTree() → GET /v1/menu/tree → returns nested categories+items+modifiers
+   - Parses response with the local Zod schemas; throws on shape mismatch
+
+10. artifacts/nuatis-pos/src/lib/api/orders.ts:
+    - createOrder(location_id, staff_id) → POST /v1/orders
+    - addOrderItem(order_id, menu_item_id, quantity, modifiers) → POST /v1/orders/:id/items
+    - voidOrderItem(order_id, item_id) → DELETE /v1/orders/:id/items/:item_id
+    - sendToKitchen(order_id) → POST /v1/orders/:id/send-to-kitchen
+    - checkout(order_id) → POST /v1/orders/:id/checkout
+    - createPayment(order_id, method, tip_cents) → POST /v1/orders/:id/payments
+
+═══════════════════════════════════════
+SECTION 3 — Tablet prototype UI rewiring
+═══════════════════════════════════════
+
+11. Replace the 12-item hardcoded menu with live menu tree from API:
+    - On app boot (after sign-in), fetch /v1/menu/tree once and store in React Query cache (already in deps)
+    - Use the seeded "Drinks" category — render its 6 items as the cafe menu grid
+    - Modifier picker (Milk/Size/Temp) reads from the modifier_groups in the tree response
+
+12. Add a sign-in screen as the new app entry point:
+    - Three input fields: tenant ID (default to demo: 00000000-0000-0000-0000-000000000001), location ID (we need to surface this — see step 13), PIN (4-digit numeric input)
+    - "Sign In" button calls signInWithPin
+    - On success: navigate to main POS UI
+    - On 401: show "Invalid PIN" message, clear PIN field
+    - Pre-fill demo tenant_id and location_id from import.meta.env.VITE_DEMO_TENANT_ID + VITE_DEMO_LOCATION_ID (with sane defaults pointing at the seed)
+
+13. artifacts/nuatis-pos/.env.example:
+    - VITE_API_BASE_URL=http://localhost:3002
+    - VITE_DEMO_TENANT_ID=00000000-0000-0000-0000-000000000001
+    - VITE_DEMO_LOCATION_ID=<copy from seed.sql — Agent must read seed.sql to get the actual location UUID seeded by Batch 1>
+    - VITE_DEMO_STAFF_ID=<copy from seed.sql — owner staff_id>
+
+14. Replace localStorage cart state with live order state from API:
+    - On "+ Add to cart": if no order_id in component state, call createOrder; then call addOrderItem
+    - The order_id lives in React Query cache, refetched after each mutation
+    - Item void: call voidOrderItem; refetch order
+    - On "Send to Kitchen" (if button exists in the prototype — add it if not): call sendToKitchen
+    - On "Checkout": call checkout, display the calculated total
+    - On "Tap to Pay" / "Confirm": call createPayment with method='card_mock' and selected tip; on success, render the existing Approved screen
+    - On "New Order": clear order_id, return to menu
+
+15. Display the cashier name (from the staff JWT, decoded client-side without verification — JWT is signed server-side, client just reads claims for display) in the header next to "Cafe."
+
+16. Sign-out button (header top-right): clearJwt + return to sign-in screen.
+
+═══════════════════════════════════════
+SECTION 4 — Type sharing strategy
+═══════════════════════════════════════
+
+17. The prototype is in a separate workspace (artifacts/nuatis-pos) and we don't want to make it depend on @nuatis/pos-shared (would couple throwaway code to production). Instead:
+    - Create artifacts/nuatis-pos/src/lib/api/types.ts
+    - Copy ONLY the Zod schemas the prototype needs (MenuTreeResponse, OrderSchema, OrderItemSchema, PaymentSchema, request schemas)
+    - Add a banner comment: "Copied from @nuatis/pos-shared on 2026-05-02 — keep in sync manually until prototype is replaced by production admin app. DO NOT add new schemas here; add them upstream and copy."
+
+═══════════════════════════════════════
+SECTION 5 — Prototype README + status
+═══════════════════════════════════════
+
+18. Update artifacts/nuatis-pos/README.md:
+    - Add a "Status" section: "ACTIVE INTEGRATION TESTBED — wired to real API as of May 2, 2026 batch 7. Originally throwaway prototype (Batches 1-5 May 2 morning). UX validated, brand system locked. Now used to exercise the production API end-to-end. Will be replaced by a from-scratch production tablet app at apps/pos-terminal in a later phase."
+    - Add a "How to run" section:
+      1. Start pos-api: `pnpm -F @nuatis/pos-api dev` (requires Supabase configured)
+      2. Start prototype: `cd artifacts/nuatis-pos && PORT=5173 BASE_PATH=/ pnpm dev`
+      3. Open http://localhost:5173
+      4. Sign in: PIN 1234 (demo tenant + location pre-filled from .env)
+    - Note that without Supabase configured, the API returns supabase: 'not_configured' from /v1/health and all data routes return 503 — sign-in won't work without DB
+
+═══════════════════════════════════════
+SECTION 6 — Smoke tests + commit
+═══════════════════════════════════════
+
+19. From root: pnpm install (cors deps) → pnpm -F @nuatis/pos-api typecheck → pnpm -F @nuatis/pos-api test
+
+20. Manual smoke test (document in batch report whether attempted):
+    - Without Supabase: pnpm api:dev → curl http://localhost:3002/v1/menu/tree (should 503 or report supabase: 'not_configured')
+    - In a separate shell: cd artifacts/nuatis-pos && PORT=5173 BASE_PATH=/ pnpm dev → open browser → confirm sign-in screen renders
+    - Don't fail the batch if smoke test can't complete due to env (Supabase not yet linked); document this in report
+
+21. Commit + push:
+    - git add .
+    - git commit -m "feat(integration): wire prototype to live /v1 API + CORS + sign-in screen"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add Supabase install or supabase start commands (deferred until all schema is final)
+- Do NOT add KDS screen (next batch)
+- Do NOT add scaffold pos-admin Next.js
+- Do NOT add password sign-in to the prototype (cashiers use PIN; owner sign-in to admin comes later)
+- Do NOT modify pos-shared schemas (only copy them into the prototype)
+- Do NOT touch supabase/ folder
+- Do NOT add tests for the prototype's React components (throwaway-tier code)
+- Do NOT add Stripe Terminal Web SDK integration — payments stay mock until Batch 8
+- Do NOT add a real React Native app (apps/pos-terminal) — that's a later phase
+- Do NOT add cookie auth or refresh tokens
+- Do NOT delete or rewrite anything in the existing prototype unless it conflicts with API integration
+
+TECH CONSTRAINTS
+- Vite env vars: VITE_ prefix required for client-side access
+- JWT in sessionStorage, not localStorage (clears on tab close — appropriate for shared-device cashier session)
+- All API calls use the centralized client.ts (no fetch() scattered through components)
+- React Query for server state (already in deps); useQuery for menu tree, useMutation for order writes
+- CORS allowlist explicit (no '*' even in dev)
+- Prototype Zod schemas are a manual copy from pos-shared — banner comment documents the sync requirement
+- The demo tenant/location/staff UUIDs come from seed.sql (Agent must read it, do not invent)
+
+ACCEPTANCE
+1. apps/pos-api/src/index.ts has cors middleware mounted before routes
+2. CORS_ALLOWED_ORIGINS env var validated in env.ts (fails fast if missing)
+3. artifacts/nuatis-pos/src/lib/api/ folder exists with client.ts, auth.ts, menu.ts, orders.ts, types.ts
+4. artifacts/nuatis-pos/.env.example documents all VITE_* vars
+5. Sign-in screen renders as the app entry point (route or initial state)
+6. Menu grid pulls from API (no more hardcoded 12-item array in components)
+7. Order state lives in React Query cache, not localStorage
+8. JWT stored in sessionStorage; cleared on sign-out
+9. README updated with "Status" + "How to run" sections
+10. pnpm api:typecheck → 0 errors
+11. pnpm api:test → unchanged pass count (no new test failures introduced)
+12. Smoke: pnpm api:dev boots + responds to /v1/health with 200; prototype `pnpm dev` boots and serves sign-in screen at localhost:5173
+13. git status clean post-commit
+14. git log --oneline -1 matches spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Smoke test results (boot of both services, sign-in screen render)
+- Any TS issues with the schema copies (Zod version mismatch between prototype and pos-shared, etc.)
+- Confirm supabase/ untouched, migrations 0001-0009 untouched
+- Confirm only artifacts/nuatis-pos/ and apps/pos-api/ files changed (no scope leakage)
+- Open questions for Batch 8 (Supabase install + apply migrations + activate the 27 skipped integration tests; OR Stripe Terminal Web SDK integration; OR KDS screen — recommended order)
+
+Wait for next prompt.

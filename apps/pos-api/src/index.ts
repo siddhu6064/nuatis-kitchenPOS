@@ -1,5 +1,6 @@
 import "./env.js"; // validate env on boot — must be first
 import express from "express";
+import cors from "cors";
 import { pinoHttp } from "pino-http";
 import { env } from "./env.js";
 import { logger } from "./lib/logger.js";
@@ -11,6 +12,26 @@ import { menuRouter } from "./routes/menu/index.js";
 import { ordersRouter } from "./routes/orders/index.js";
 
 const app = express();
+
+// CORS — only applied when CORS_ALLOWED_ORIGINS is configured (needed for
+// local dev where the Vite dev server runs on a different port from the API).
+if (env.CORS_ALLOWED_ORIGINS) {
+  const allowedOrigins = env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim());
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Allow requests with no origin (server-to-server, curl, etc.)
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error(`CORS: origin not allowed — ${origin}`));
+        }
+      },
+      credentials: true,
+    })
+  );
+  logger.info({ allowedOrigins }, "CORS enabled");
+}
 
 // Middleware — order matters
 app.use(requestId);
