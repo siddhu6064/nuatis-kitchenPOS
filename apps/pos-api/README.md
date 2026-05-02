@@ -26,7 +26,7 @@ See [root README → Local Development](../../README.md#local-development) for t
 
 Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 - `GET /v1/health` → `supabase:"connected"`
-- All 29 integration tests activate: `pnpm --filter @nuatis/pos-api test` → 58 pass, 0 skip
+- All integration tests activate: `pnpm --filter @nuatis/pos-api test` → 58 pass, 0 skip
 
 ## Routes
 
@@ -46,8 +46,52 @@ Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 | POST | `/v1/orders/:id/items/:item_id/bump` | Terminal or Session | Bump (dismiss) item on KDS |
 | POST | `/v1/orders/:id/send-to-kitchen` | Terminal | Fire order → kitchen + Realtime broadcast |
 | POST | `/v1/orders/:id/checkout` | Terminal | Compute totals (tax 8.25%) |
-| POST | `/v1/orders/:id/payments` | Terminal | Record payment (card_mock in prototype) |
-| POST | `/v1/orders/:id/void` | Session (owner/manager) | Void order with reason |
+| POST | `/v1/orders/:id/payments` | Terminal | Record payment; cash requires open shift |
+| POST | `/v1/orders/:id/void` | Any + manager PIN | Void order (managers direct; cashiers need PIN) |
+| POST | `/v1/cash/sessions` | Terminal or Session | Open a new cash drawer shift |
+| GET | `/v1/cash/sessions/current` | Terminal or Session | Get open session for a location |
+| GET | `/v1/cash/sessions/:id` | Terminal or Session | Session detail + all cash events |
+| POST | `/v1/cash/sessions/:id/events` | Terminal or Session | Log cash event (pay_out/no_sale need PIN) |
+| POST | `/v1/cash/sessions/:id/close` | Terminal or Session | Close shift; calculates expected + variance |
+| GET | `/v1/cash/sessions` | Session (owner/manager) | List sessions with optional filters |
+
+## Manager PIN Override Flow
+
+Some actions require a manager to physically approve at the terminal:
+
+| Endpoint | Trigger |
+|----------|---------|
+| `POST /v1/orders/:id/void` | When caller is a cashier (terminal JWT) |
+| `POST /v1/cash/sessions/:id/events` | When `type` is `pay_out` or `no_sale` |
+
+**Protocol:**
+
+1. Client calls the endpoint without `manager_pin` in the body.
+2. Server responds `403` with `{ error: { code: "manager_pin_required" } }`.
+3. Terminal displays a PIN entry modal — a manager physically enters their PIN.
+4. Client retries the **same** request with `{ ..., manager_pin: "XXXX" }` merged into the body.
+5. Server bcrypt-compares against all `owner`/`manager` staff for the tenant (constant-ish iteration to resist timing attacks).
+6. On match: request proceeds; `req.manager_id` is set; a `manager_pin_override` audit log entry is written.
+7. On mismatch: `403` with `{ error: { code: "manager_pin_invalid" } }`.
+
+> Session JWT holders with `owner` or `manager` role bypass the PIN check entirely on `void` — they can void directly.
+
+## Cash Drawer Lifecycle
+
+```
+open shift (POST /sessions)
+    ↓
+take cash sales → auto-logged via POST /orders/:id/payments method=cash
+    ↓
+pay_in / pay_out (manager PIN) / no_sale (manager PIN)
+    ↓
+close shift (POST /sessions/:id/close)
+    expected = float + Σcash_sale - Σcash_refund + Σpay_in - Σpay_out
+    variance = actual_count - expected
+```
+
+- One open session per location at a time (enforced by partial unique index).
+- All amounts in cents (integers). Variance can be negative (short) or positive (over).
 
 ## Tests
 
@@ -57,8 +101,8 @@ pnpm --filter @nuatis/pos-api test
 
 | Condition | Result |
 |-----------|--------|
-| No Supabase (default) | 29 pass, 27 skip |
-| With `supabase start` | 58 pass, 0 skip |
+| No Supabase (default) | 47 pass, 36 skip |
+| With `supabase start` | 83 pass, 0 skip |
 
 ## Folder structure
 
@@ -68,19 +112,23 @@ apps/pos-api/
 │   ├── index.ts              # Express app entry + CORS + graceful shutdown
 │   ├── env.ts                # Zod-validated env (SUPABASE_URL optional)
 │   ├── lib/
+│   │   ├── db.ts             # tenantSelect / recalcOrderTotals / calculateExpectedCash / writeAuditLog
 │   │   ├── jwt.ts            # signTerminalJwt / signSessionJwt / verifyJwt
 │   │   ├── logger.ts         # Pino (pretty dev, JSON prod)
-│   │   ├── passwords.ts      # bcrypt helpers
+│   │   ├── passwords.ts      # bcrypt helpers (hashPin / verifyPin / hashPassword / verifyPassword)
 │   │   └── supabase.ts       # Singleton service_role client
 │   ├── middleware/
 │   │   ├── auth.ts           # requireAuth({ kinds }) JWT guard
+│   │   ├── manager-pin.ts    # requireManagerPin() — 403→retry PIN override pattern
 │   │   ├── request-id.ts     # X-Request-Id per request
+│   │   ├── role-guard.ts     # requireRole([...]) session-role guard
 │   │   └── error-handler.ts  # Centralized error shape
 │   └── routes/
 │       ├── auth.ts           # sign-in + pin endpoints
 │       ├── health.ts         # /v1/health
+│       ├── cash/             # cash drawer lifecycle (open/close shift, events, variance)
 │       ├── menu/             # categories + items + tree
-│       └── orders/           # full order state machine + KDS bump
+│       └── orders/           # full order state machine + KDS bump + void
 ├── .env                      # Local secrets — gitignored, never commit
 ├── .env.example              # Template — committed
 └── README.md
@@ -92,3 +140,5 @@ apps/pos-api/
 - Never `console.log` — use `req.log` in route handlers, `logger` elsewhere
 - Never read `process.env` directly — always go through `src/env.ts`
 - All exported `Router` instances annotated `const xRouter: IRouter = Router()` (TS2742 guard)
+- `tenant_id` always from `req.auth` — never from the request body
+- All money in cents (integers) — no floats

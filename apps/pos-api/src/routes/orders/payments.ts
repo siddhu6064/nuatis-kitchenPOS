@@ -25,6 +25,13 @@ async function confirmPayment(
 
 // ---------------------------------------------------------------------------
 // POST /v1/orders/:id/payments — create (and auto-confirm if cash/card_mock)
+//
+// Cash payment wiring:
+//   When method='cash', a cash_event row of type='cash_sale' is inserted into
+//   the open cash_drawer_session for this location. If no open session exists,
+//   the request is rejected with 409 / code='no_open_cash_session'.
+//
+//   Future: cash refunds (Batch 13) will insert a cash_event of type='cash_refund'.
 // ---------------------------------------------------------------------------
 paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Promise<void> => {
   const client = getSupabaseClient();
@@ -43,6 +50,29 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
   if (orderErr) { res.status(500).json({ error: { code: "internal_error", message: orderErr.message } }); return; }
   if (!order) { res.status(404).json({ error: { code: "not_found", message: "Order not found" } }); return; }
   if (!["open", "fired"].includes(order.status as string)) { res.status(409).json({ error: { code: "conflict", message: `Cannot pay order with status '${order.status as string}'` } }); return; }
+
+  // For cash payments, look up the open session BEFORE creating the payment
+  let cashSessionId: string | null = null;
+  if (parsed.data.method === "cash") {
+    const { data: session } = await db
+      .from("cash_drawer_sessions")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("location_id", order.location_id)
+      .eq("status", "open")
+      .maybeSingle();
+
+    if (!session) {
+      res.status(409).json({
+        error: {
+          code: "no_open_cash_session",
+          message: "No open cash session for this location. Please open a shift before taking cash payments.",
+        },
+      });
+      return;
+    }
+    cashSessionId = session.id as string;
+  }
 
   // Calculate totals
   const subtotal_cents = await recalcOrderTotals(client, orderId, tenantId);
@@ -73,12 +103,23 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
   // Auto-confirm for cash/card_mock
   if (isAutoConfirm) {
     await confirmPayment(db, payment.id, orderId, tenantId, tip_cents);
-    // Update order tip and recalculate total in DB
     await db.from("orders").update({ tax_cents, total_cents }).eq("id", orderId).eq("tenant_id", tenantId);
   }
 
   const staffId = req.auth!.kind === "terminal" ? req.auth!.staff_id : req.auth!.user_id;
-  writeAuditLog(client, { tenant_id: tenantId, staff_id: staffId, action: "payment_created", target_type: "payment", target_id: payment.id, payload: { method: parsed.data.method, amount_cents: total_cents, auto_confirmed: isAutoConfirm }, ip_address: req.ip });
+
+  // Record cash sale event in the open drawer session
+  if (parsed.data.method === "cash" && cashSessionId) {
+    await db.from("cash_events").insert({
+      session_id: cashSessionId,
+      type: "cash_sale",
+      amount_cents: total_cents,
+      reason: null,
+      staff_id: staffId,
+    });
+  }
+
+  writeAuditLog(client, { tenant_id: tenantId, staff_id: staffId, action: "payment_created", target_type: "payment", target_id: payment.id, payload: { method: parsed.data.method, amount_cents: total_cents, auto_confirmed: isAutoConfirm, cash_session_id: cashSessionId }, ip_address: req.ip });
 
   // Return fresh order state alongside payment
   const { data: updatedOrder } = await db.from("orders").select("*").eq("id", orderId).single();

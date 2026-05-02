@@ -1,0 +1,176 @@
+▶ PROMPT [Phase 0 · Batch 10 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-9 complete: 10 migrations, full API surface (auth + menu + orders + KDS bump), prototype POS at / + KDS at /kds with Realtime broadcast. Cash drawer tables (cash_drawer_sessions, cash_events) exist from Migration 0005 (Batch 1) but no API endpoints, no UI. This batch builds the cash drawer lifecycle: open shift, log cash events (pay-in / pay-out / no-sale / cash-sale / cash-refund), close shift with variance calculation. Manager-PIN gating on void/refund/discount/open-drawer/re-open-shift. NO printer pulse this batch — APG cash drawer kick is Phase 10. NO Stripe Terminal integration this batch.
+
+GOAL
+Working cash session lifecycle: cashier opens shift with opening float, takes cash sales (already supported by /v1/orders/:id/payments method='cash' from Batch 6 — verify it logs to cash_events), close shift with actual count, see variance. Manager-PIN-protected actions return 403 with a "manager_pin_required" code; client sends a follow-up call with manager PIN to override.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schemas
+═══════════════════════════════════════
+
+1. Create packages/pos-shared/src/cash.ts:
+   - CashEventTypeSchema = z.enum(['pay_in', 'pay_out', 'no_sale', 'cash_sale', 'cash_refund'])
+   - CashSessionStatusSchema = z.enum(['open', 'closed'])
+   - CashSessionSchema = z.object({ id, tenant_id, location_id, opened_by_staff_id, opening_float_cents, closing_actual_cents: z.number().int().nullable(), expected_cents: z.number().int().nullable(), variance_cents: z.number().int().nullable(), status: CashSessionStatusSchema, opened_at: z.string().datetime(), closed_at: z.string().datetime().nullable() })
+   - CashEventSchema = z.object({ id, session_id, type: CashEventTypeSchema, amount_cents, reason: z.string().nullable(), staff_id, created_at })
+   - OpenSessionRequestSchema = z.object({ location_id: z.string().uuid(), opening_float_cents: z.number().int().nonnegative() })
+   - LogCashEventRequestSchema = z.object({ type: CashEventTypeSchema, amount_cents: z.number().int(), reason: z.string().min(1).max(500).optional() })
+   - CloseSessionRequestSchema = z.object({ closing_actual_cents: z.number().int().nonnegative() })
+   - ManagerPinOverrideSchema = z.object({ manager_pin: z.string().regex(/^\d{4}$/) })
+   - Export inferred types
+   - Re-export from src/index.ts
+
+2. Rebuild pos-shared.
+
+═══════════════════════════════════════
+SECTION 2 — Migration 0011 (verify schema delta only)
+═══════════════════════════════════════
+
+3. Inspect migrations 0001-0010 for cash_drawer_sessions and cash_events table definitions. The original Migration 0005 should have these. If any columns from CashSessionSchema or CashEventSchema are missing, write Migration 0011 with the delta. Otherwise, no migration needed this batch — document that in the report.
+
+4. If Migration 0011 needed: file 20260502150000_cash_drawer_completion.sql with only the deltas. Common adds I'd expect: status enum on cash_drawer_sessions; expected_cents, variance_cents nullable columns; cash_sale and cash_refund as new values in the cash_events.type enum.
+
+═══════════════════════════════════════
+SECTION 3 — pos-api cash routes
+═══════════════════════════════════════
+
+5. Create apps/pos-api/src/routes/cash/index.ts as barrel router; mount at /v1/cash.
+
+6. apps/pos-api/src/routes/cash/sessions.ts:
+   - POST /v1/cash/sessions — any auth (session OR terminal); body = OpenSessionRequestSchema; validates no other open session exists for this location (one open session per location at a time); inserts cash_drawer_sessions row with status='open', opened_at=now(); returns CashSession
+   - GET /v1/cash/sessions/current?location_id=... — any auth; returns the currently-open session for the location, or 404 if none
+   - GET /v1/cash/sessions/:id — any auth; returns session + nested events
+   - POST /v1/cash/sessions/:id/events — any auth; body = LogCashEventRequestSchema; validates session is 'open'; inserts cash_event row; returns event
+   - For pay_out and no_sale: requires manager PIN — see Section 4
+   - POST /v1/cash/sessions/:id/close — any auth; body = CloseSessionRequestSchema; validates session is 'open'; calculates expected_cents = opening_float + sum(cash_sale events) - sum(cash_refund events) + sum(pay_in) - sum(pay_out); calculates variance_cents = closing_actual - expected; updates session row with closing_actual_cents, expected_cents, variance_cents, status='closed', closed_at=now(); returns updated session
+   - GET /v1/cash/sessions — session-only (owner+manager); query params: location_id (optional), status (optional), limit (default 50); returns array
+
+═══════════════════════════════════════
+SECTION 4 — Manager PIN override pattern
+═══════════════════════════════════════
+
+7. Create apps/pos-api/src/middleware/manager-pin.ts:
+   - Middleware factory: requireManagerPin() — checks if request body includes a manager_pin field
+   - If absent: returns 403 with body { error: { code: 'manager_pin_required', message: 'A manager PIN is required for this action.' } }
+   - If present: looks up staff_members where tenant_id matches AND role IN ('owner', 'manager'), iterates all to bcrypt-compare manager_pin against pin_hash (constant-ish time)
+   - On match: attaches req.manager_id to request, calls next()
+   - On no match: returns 403 with code 'manager_pin_invalid'
+   - Document in code comments: client UX is "user attempts action → 403 manager_pin_required → modal pops up asking manager to enter PIN → client retries same request with manager_pin in body"
+
+8. Apply requireManagerPin to:
+   - POST /v1/cash/sessions/:id/events when type='pay_out' or type='no_sale'
+   - POST /v1/orders/:id/void (existing endpoint — currently session-only; add manager_pin override path so cashier can void with manager approval)
+   - Future: POST /v1/payments/:id/refund (Stripe batch — not this batch)
+   - Future: discount endpoints (not built yet)
+
+9. Audit log entries on every manager-overridden action: action='manager_pin_override', payload includes manager_id and the original action.
+
+═══════════════════════════════════════
+SECTION 5 — Wire cash payment to cash_events
+═══════════════════════════════════════
+
+10. Update apps/pos-api/src/routes/orders/payments.ts:
+    - When creating a payment with method='cash' AND auto-confirming: ALSO insert a cash_event row with type='cash_sale', amount_cents, session_id (looked up from current open session for the order's location), staff_id from req.auth
+    - If no open cash session exists for the location: return 409 with code 'no_open_cash_session', message asks cashier to open shift first
+    - When refunding a cash payment (future Stripe batch — note here for pattern): insert a cash_event with type='cash_refund', negative amount_cents
+
+11. Document this wiring in the cash route's README/comments.
+
+═══════════════════════════════════════
+SECTION 6 — Tests
+═══════════════════════════════════════
+
+12. apps/pos-api/src/routes/cash/cash.test.ts:
+    - Skip-graceful integration tests (need Supabase):
+      - Open session → returns CashSession with status='open'
+      - Open second session for same location → 409 conflict
+      - Log pay_in event → succeeds
+      - Log pay_out event without manager PIN → 403 manager_pin_required
+      - Log pay_out event with valid manager PIN → succeeds, audit log shows manager_pin_override
+      - Log pay_out with invalid manager PIN → 403 manager_pin_invalid
+      - Log cash_sale via order checkout → cash_events row appears (verify integration with orders/payments)
+      - Close session → variance calculated correctly: opening 100.00 + 3 cash_sales of 4.50 + 1 pay_out of 2.00 = expected $111.50; if cashier reports actual $111.50, variance = 0; if actual $109.50, variance = -200 cents
+      - Close already-closed session → 409
+      - Open new session after close → succeeds
+    - Unit tests (always pass):
+      - requireManagerPin middleware rejects requests without manager_pin field
+      - Variance calc helper handles edge cases (zero events, only pay_in, only refunds)
+
+13. Add to apps/pos-api/src/lib/db.test.ts:
+    - calculateExpectedCash helper unit tests (extract the variance calculation into lib/db.ts so it's testable in isolation)
+
+═══════════════════════════════════════
+SECTION 7 — Documentation
+═══════════════════════════════════════
+
+14. Update apps/pos-api/README.md routes table:
+    - POST /v1/cash/sessions
+    - GET /v1/cash/sessions/current
+    - GET /v1/cash/sessions/:id
+    - POST /v1/cash/sessions/:id/events
+    - POST /v1/cash/sessions/:id/close
+    - GET /v1/cash/sessions
+
+15. Add Manager PIN flow doc — short section in apps/pos-api/README.md explaining the 403 → retry pattern with manager_pin in body.
+
+═══════════════════════════════════════
+SECTION 8 — Commit
+═══════════════════════════════════════
+
+16. From root: pnpm install, pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (preserve baseline + add new unit tests).
+
+17. Commit + push:
+    - git add .
+    - git commit -m "feat(api): cash drawer lifecycle + manager PIN override (open/close shift, cash events, variance)"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add APG cash drawer kick / printer pulse (Phase 10 hardware integration)
+- Do NOT add cash drawer UI to the prototype (admin app territory)
+- Do NOT add daily reports or end-of-day rollup (Batch 12 / Batch D)
+- Do NOT add receipt sending (Batch 11 / Batch A)
+- Do NOT add scheduled close-shift alerts via BullMQ
+- Do NOT add multi-drawer-per-location support (out of scope; one drawer per location)
+- Do NOT add discount endpoints (deferred)
+- Do NOT add real Stripe refund flow (Batch 13)
+- Do NOT touch artifacts/ folder unless trivially needed
+- Do NOT add CSV export of cash events (deferred to reports batch)
+- Do NOT silently fix bugs in existing routes — flag them in the report
+
+TECH CONSTRAINTS
+- All zod schemas in pos-shared; never inline duplicates
+- tenant_id from req.auth always; never trust body
+- Manager PIN compare via bcrypt with constant-ish time iteration of all owner/manager staff
+- Variance can be negative (short) or positive (over)
+- One open session per location enforced via partial unique index OR check before insert
+- All money in cents (int)
+- Express routers annotated `const xRouter: IRouter = Router()` (TS2742 rule)
+- Audit log fire-and-forget on every mutation
+- ESM NodeNext with .js suffix on imports
+
+ACCEPTANCE
+1. packages/pos-shared/dist/cash.d.ts has CashSession + CashEvent + request/response types
+2. apps/pos-api/src/routes/cash/sessions.ts implements all 6 endpoints
+3. apps/pos-api/src/middleware/manager-pin.ts implements the override pattern
+4. orders/payments.ts updated: cash payments insert cash_event; no-open-session returns 409
+5. Migration 0011 either exists with deltas OR report documents that no DDL was needed (specify which)
+6. pnpm -F @nuatis/pos-api typecheck → 0 errors
+7. pnpm -F @nuatis/pos-api test → 25+ pass + skip-graceful baseline preserved; new unit tests pass; new integration tests skip cleanly without Supabase
+8. Manager PIN flow documented in pos-api README
+9. git status clean post-commit
+10. git log --oneline -1 matches commit message
+
+HARD STOP
+Stop after scope. Report:
+- Whether Migration 0011 was needed (and what delta if so)
+- Test counts (pass / skip / fail) — expected ~40 pass + ~35 skip
+- Any TS workarounds (especially around the discriminated union req.auth + req.manager_id types)
+- Confirm migrations 0001-0010 untouched
+- Confirm artifacts/ untouched (or document trivial changes)
+- Open questions for Batch 11 (receipt email/SMS workers — Resend + Telnyx + Upstash + BullMQ; what infra accounts need creating; should TCPA opt-in flow happen at receipt prompt or at cashier-side contact creation; do we want a /v1/receipts/preview endpoint that returns the rendered email HTML for testing without actually sending)
+
+Wait for next prompt.

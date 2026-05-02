@@ -80,6 +80,53 @@ export async function recalcOrderTotals(
 }
 
 // ---------------------------------------------------------------------------
+// Cash drawer helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Calculates the expected cash in the drawer at close time.
+ *
+ * Formula:
+ *   expected = opening_float
+ *            + Σ cash_sale      (cash received from customers)
+ *            - Σ cash_refund    (cash given back to customers)
+ *            + Σ pay_in         (manager adds cash to drawer)
+ *            - Σ pay_out        (manager removes cash from drawer)
+ *
+ * no_sale events have no effect on expected cash (they open the drawer
+ * without changing the balance).
+ *
+ * Variance can be negative (cashier is short) or positive (cashier is over).
+ * All amounts are in cents (integers).
+ */
+export function calculateExpectedCash(
+  openingFloatCents: number,
+  events: { type: string; amount_cents: number }[]
+): number {
+  let expected = openingFloatCents;
+
+  for (const e of events) {
+    switch (e.type) {
+      case "cash_sale":
+        expected += e.amount_cents;
+        break;
+      case "cash_refund":
+        expected -= e.amount_cents;
+        break;
+      case "pay_in":
+        expected += e.amount_cents;
+        break;
+      case "pay_out":
+        expected -= e.amount_cents;
+        break;
+      // no_sale: drawer opened with no balance change — no effect
+    }
+  }
+
+  return expected;
+}
+
+// ---------------------------------------------------------------------------
 // Audit log helper — fire-and-forget
 // ---------------------------------------------------------------------------
 export function writeAuditLog(

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { tenantSelect, assertTenantOwns, recalcOrderTotals } from "./db.js";
+import { tenantSelect, assertTenantOwns, recalcOrderTotals, calculateExpectedCash } from "./db.js";
 
 // ---------------------------------------------------------------------------
 // Mock a minimal Supabase client (single resolve)
@@ -156,5 +156,93 @@ describe("assertTenantOwns", () => {
         "tenant-abc"
       )
     ).rejects.toMatchObject({ message: "DB down" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calculateExpectedCash — pure function, always testable
+// ---------------------------------------------------------------------------
+describe("calculateExpectedCash", () => {
+  it("returns opening float when there are no events", () => {
+    expect(calculateExpectedCash(10000, [])).toBe(10000);
+  });
+
+  it("adds cash_sale events to opening float", () => {
+    const events = [
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+    ];
+    // $100 float + 3 × $4.50 = $113.50
+    expect(calculateExpectedCash(10000, events)).toBe(11350);
+  });
+
+  it("subtracts cash_refund events", () => {
+    const events = [
+      { type: "cash_sale", amount_cents: 1000 },
+      { type: "cash_refund", amount_cents: 300 },
+    ];
+    // $100 float + $10 sale - $3 refund = $107
+    expect(calculateExpectedCash(10000, events)).toBe(10700);
+  });
+
+  it("adds pay_in events", () => {
+    const events = [{ type: "pay_in", amount_cents: 5000 }];
+    // $100 float + $50 pay_in = $150
+    expect(calculateExpectedCash(10000, events)).toBe(15000);
+  });
+
+  it("subtracts pay_out events", () => {
+    const events = [{ type: "pay_out", amount_cents: 200 }];
+    // $100 float - $2 pay_out = $98
+    expect(calculateExpectedCash(10000, events)).toBe(9800);
+  });
+
+  it("no_sale events have no effect on expected cash", () => {
+    const events = [{ type: "no_sale", amount_cents: 0 }];
+    expect(calculateExpectedCash(10000, events)).toBe(10000);
+  });
+
+  it("produces the scenario from the spec: float=$100, 3×cash_sale $4.50, pay_out $2.00 → expected $111.50", () => {
+    const events = [
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "pay_out", amount_cents: 200 },
+    ];
+    // $100 + $13.50 - $2 = $111.50
+    expect(calculateExpectedCash(10000, events)).toBe(11150);
+  });
+
+  it("variance scenario: actual $109.50 → variance = -200 cents (short)", () => {
+    const events = [
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "cash_sale", amount_cents: 450 },
+      { type: "pay_out", amount_cents: 200 },
+    ];
+    const expected = calculateExpectedCash(10000, events); // 11150
+    const closingActual = 10950;
+    const variance = closingActual - expected; // -200
+    expect(variance).toBe(-200);
+  });
+
+  it("can produce a positive variance (over)", () => {
+    const events = [{ type: "cash_sale", amount_cents: 500 }];
+    const expected = calculateExpectedCash(10000, events); // 10500
+    const closingActual = 10600;
+    const variance = closingActual - expected; // +100
+    expect(variance).toBe(100);
+  });
+
+  it("handles only refunds (edge: drawer goes below float)", () => {
+    const events = [{ type: "cash_refund", amount_cents: 15000 }];
+    // $100 float - $150 refund = -$50 (negative expected is valid)
+    expect(calculateExpectedCash(10000, events)).toBe(-5000);
+  });
+
+  it("handles zero opening float", () => {
+    const events = [{ type: "cash_sale", amount_cents: 750 }];
+    expect(calculateExpectedCash(0, events)).toBe(750);
   });
 });
