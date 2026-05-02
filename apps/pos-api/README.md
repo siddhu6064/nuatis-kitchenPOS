@@ -56,6 +56,53 @@ Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 | POST | `/v1/cash/sessions/:id/events` | Terminal or Session | Log cash event (pay_out/no_sale need PIN) |
 | POST | `/v1/cash/sessions/:id/close` | Terminal or Session | Close shift; calculates expected + variance |
 | GET | `/v1/cash/sessions` | Session (owner/manager) | List sessions with optional filters |
+| GET | `/v1/reports/end-of-day` | Session (owner/manager) | End-of-day report for a date (`?date=YYYY-MM-DD`) |
+| GET | `/v1/reports/end-of-day.csv` | Session (owner/manager) | CSV export of end-of-day report |
+| GET | `/v1/reports/daily-history` | Session (owner/manager) | List daily snapshots (`?limit=30`, max 90) |
+
+## Reports Architecture
+
+End-of-day reports use a **snapshot-based** model:
+
+```
+Cron (*/5 * * * *)
+    ↓ checks all tenant local times
+    ↓ enqueues "rollup" job when tenant clock hits 00:01–00:06
+    ↓
+BullMQ Worker (end-of-day-rollup)
+    ↓ fetches orders / items / payments / refunds for the date
+    ↓ runs pure aggregateEndOfDay() function
+    ↓ UPSERTs into reports_daily (idempotent — SELECT first, then INSERT or UPDATE)
+    ↓ optionally emails owner when tenant.email_daily_report=true
+```
+
+### Report response shape
+
+`GET /v1/reports/end-of-day?date=YYYY-MM-DD` returns:
+
+| Field | Notes |
+|-------|-------|
+| `is_snapshot` | `true` = served from `reports_daily`; `false` = live aggregation |
+| `gross_sales_cents` | Σ `payment.amount_cents − tip_cents` for `status=succeeded` |
+| `tips_cents` | Σ `payment.tip_cents` for succeeded payments |
+| `tax_cents` | Σ `order.tax_cents` for paid orders |
+| `taxable_cents` | Σ item gross for non-voided items with `menu_item.taxable=true` |
+| `voids_cents` | Σ `order.subtotal + tax` for orders voided *on the date* (uses `voided_at`) |
+| `refunds_cents` | Σ refund amounts where `refund.created_at` falls on the date |
+| `net_cents` | `gross_sales + tips − refunds` |
+| `by_method` | Per-payment-method count + gross |
+| `by_item` | Per-item qty, gross, % of total |
+| `by_staff` | Per-staff ticket count + gross + tips |
+
+Date boundary: a row counts for date X if its timestamp falls within X 00:00:00–23:59:59 **in the tenant's timezone** (default: `America/Chicago`).
+
+### Immutable history / refunds after close
+
+`reports_daily` rows are never deleted. The `refunds_after_close_cents` column tracks refunds processed after the snapshot date without rewriting the historical `refunds_cents` total. This preserves immutable night-of numbers for accounting.
+
+### Mock mode
+
+Same pattern as receipts: when `UPSTASH_REDIS_URL` is absent, the cron scheduler logs `[mock] cron disabled` and no jobs are enqueued. The `/v1/reports/end-of-day` route still works via live aggregation.
 
 ## Manager PIN Override Flow
 
@@ -123,8 +170,9 @@ response — the jobs are logged to stdout instead of being delivered.
 | — | `RECEIPT_TOKEN_SECRET` | Separate signing key (falls back to `POS_JWT_SECRET`) |
 
 Workers run **in the same process** as the Express server (single-process MVP). In production,
-split them to a dedicated worker process by running `src/workers/receipt-email.ts` and
-`src/workers/receipt-sms.ts` directly against the same Redis queue.
+split them to a dedicated worker process by running `src/workers/receipt-email.ts`,
+`src/workers/receipt-sms.ts`, and `src/workers/end-of-day-rollup.ts` directly against the same
+Redis queue.
 
 ### TCPA compliance
 
@@ -160,8 +208,8 @@ pnpm --filter @nuatis/pos-api test
 
 | Condition | Result |
 |-----------|--------|
-| No Supabase, no Redis (default) | 58+ pass, 36 skip |
-| With `supabase start` | 94+ pass, 0 skip |
+| No Supabase, no Redis (default) | 104+ pass, 42 skip |
+| With `supabase start` | ~145+ pass, 0 skip |
 
 ## Folder structure
 
@@ -176,8 +224,9 @@ apps/pos-api/
 │   │   ├── jwt.ts            # signTerminalJwt / signSessionJwt / verifyJwt
 │   │   ├── logger.ts         # Pino (pretty dev, JSON prod)
 │   │   ├── passwords.ts      # bcrypt helpers (hashPin / verifyPin / hashPassword / verifyPassword)
-│   │   ├── queue.ts          # BullMQ queue singletons + enqueueReceiptEmail/Sms (no-op in mock mode)
+│   │   ├── queue.ts          # BullMQ queue singletons + enqueue helpers + EOD cron scheduler
 │   │   ├── receipt-token.ts  # signReceiptToken / verifyReceiptToken (90-day HS256 JWT)
+│   │   ├── reports.ts        # aggregateEndOfDay() — pure aggregation, no DB, fully unit-tested
 │   │   ├── sms.ts            # sendSms — Telnyx HTTP API or mock log
 │   │   └── supabase.ts       # Singleton service_role client
 │   ├── middleware/
@@ -192,10 +241,12 @@ apps/pos-api/
 │   │   ├── cash/             # cash drawer lifecycle (open/close shift, events, variance)
 │   │   ├── menu/             # categories + items + tree
 │   │   ├── orders/           # full order state machine + KDS bump + void + receipt send
-│   │   └── receipts/         # send.ts (POST /:id/receipts) + view.ts (GET /r/:token)
+│   │   ├── receipts/         # send.ts (POST /:id/receipts) + view.ts (GET /r/:token)
+│   │   └── reports/          # end-of-day.ts + csv.ts + list.ts (EOD report, CSV export, history)
 │   └── workers/
-│       ├── receipt-email.ts  # BullMQ worker — fetches order, renders HTML, sends via Resend
-│       └── receipt-sms.ts    # BullMQ worker — TCPA double-check, sends via Telnyx
+│       ├── end-of-day-rollup.ts  # cron-check (*/5 * * * *) + tenant rollup + optional owner email
+│       ├── receipt-email.ts      # BullMQ worker — fetches order, renders HTML, sends via Resend
+│       └── receipt-sms.ts        # BullMQ worker — TCPA double-check, sends via Telnyx
 ├── .env                      # Local secrets — gitignored, never commit
 ├── .env.example              # Template — committed
 └── README.md

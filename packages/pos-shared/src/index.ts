@@ -4,4 +4,5 @@ export * from "./common.js";
 export * from "./menu.js";
 export * from "./orders.js";
 export * from "./receipts.js";
+export * from "./reports.js";
 export * from "./staff.js";

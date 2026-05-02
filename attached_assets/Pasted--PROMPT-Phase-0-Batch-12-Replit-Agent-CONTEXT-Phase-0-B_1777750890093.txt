@@ -1,0 +1,256 @@
+▶ PROMPT [Phase 0 · Batch 12 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-11 complete: 12 migrations, full API (auth, menu, orders, KDS, cash, receipts), 76 tests passing. This batch closes Phase 7 of the build checklist: end-of-day reports. Architecture: snapshot-based — a BullMQ cron worker runs at 00:01 tenant-local time, computes daily totals, writes to reports_daily table; the API reads from the snapshot for historical days, falls back to live aggregation for "today." This gives owners immutable historical numbers even when refunds/voids hit later.
+
+GOAL
+Working report pipeline: GET /v1/reports/end-of-day?date=YYYY-MM-DD returns gross_sales / taxable / tax / tips / discounts / voids / refunds / net + by-item / by-staff / by-method breakdowns. Cron worker snapshots yesterday's numbers at midnight tenant-local. Optional email-to-owner via existing Resend wiring when owner has email_daily_report=true on tenant. CSV export endpoint. NO admin UI this batch — that's Batch C.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schemas
+═══════════════════════════════════════
+
+1. Create packages/pos-shared/src/reports.ts:
+   - DateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD format required')
+   - PaymentMethodBreakdownSchema = z.object({ method: z.enum(['card_present','card_not_present','cash','card_mock']), count: z.number().int(), gross_cents: z.number().int() })
+   - ItemBreakdownSchema = z.object({ menu_item_id: z.string().uuid().nullable(), name: z.string(), qty_sold: z.number().int(), gross_cents: z.number().int(), pct_of_total: z.number() })
+   - StaffBreakdownSchema = z.object({ staff_id: z.string().uuid(), full_name: z.string(), ticket_count: z.number().int(), gross_cents: z.number().int(), tips_cents: z.number().int() })
+   - EndOfDayReportSchema = z.object({
+       tenant_id, location_id (nullable — if null, tenant-wide rollup),
+       date: DateStringSchema,
+       is_snapshot: z.boolean(),  // true = served from reports_daily; false = live aggregation
+       snapshot_at: z.string().datetime().nullable(),
+       gross_sales_cents, taxable_cents, tax_cents, tips_cents,
+       discounts_cents, voids_cents, refunds_cents, net_cents,
+       order_count: z.number().int(), paid_order_count: z.number().int(), voided_order_count: z.number().int(),
+       by_method: z.array(PaymentMethodBreakdownSchema),
+       by_item: z.array(ItemBreakdownSchema),
+       by_staff: z.array(StaffBreakdownSchema)
+     })
+   - GetEndOfDayQuerySchema = z.object({ date: DateStringSchema, location_id: z.string().uuid().optional() })
+   - Export inferred types
+   - Re-export from index.ts
+
+═══════════════════════════════════════
+SECTION 2 — Migration 0013 (reports_daily snapshot table + tenant settings)
+═══════════════════════════════════════
+
+2. supabase/migrations/20260502170000_reports_daily.sql:
+   - CREATE TABLE reports_daily (
+       id uuid primary key default gen_random_uuid(),
+       tenant_id uuid not null,
+       location_id uuid (nullable — null means tenant-wide rollup; not used in MVP but column exists for forward-compat),
+       date date not null,
+       is_final boolean not null default true,  // false would mean partial-day or in-progress
+       snapshot_at timestamptz not null default now(),
+       gross_sales_cents int not null default 0,
+       taxable_cents int not null default 0,
+       tax_cents int not null default 0,
+       tips_cents int not null default 0,
+       discounts_cents int not null default 0,
+       voids_cents int not null default 0,
+       refunds_cents int not null default 0,
+       net_cents int not null default 0,
+       order_count int not null default 0,
+       paid_order_count int not null default 0,
+       voided_order_count int not null default 0,
+       by_method jsonb not null default '[]',
+       by_item jsonb not null default '[]',
+       by_staff jsonb not null default '[]',
+       refunds_after_close_cents int not null default 0,  -- refunds processed after the snapshot date
+       created_at timestamptz default now(),
+       UNIQUE (tenant_id, location_id, date)
+     )
+   - RLS: tenant_isolation policy + service_role_bypass (same pattern as everywhere)
+   - Index on (tenant_id, date desc) for "list reports descending"
+   - ALTER tenant table: add column email_daily_report boolean not null default false (controls whether the cron sends the daily email to owner)
+   - ALTER tenant table: add column daily_report_recipient_email text (defaults to NULL — cron uses owner's email if NULL)
+   - Read existing migrations FIRST; only write actual deltas
+
+═══════════════════════════════════════
+SECTION 3 — pos-api: aggregation library
+═══════════════════════════════════════
+
+3. apps/pos-api/src/lib/reports.ts — pure aggregation logic:
+   - Pure functions, no Express, no DB client smuggled in
+   - aggregateEndOfDay(orders, orderItems, payments, refunds, cashEvents, staffMembers, menuItems, salesTaxBps) → returns EndOfDayReportSchema-shaped object minus tenant/location/date/is_snapshot fields
+   - This is unit-testable without DB; tests pass deterministic fixtures
+   - Aggregation rules:
+     * gross_sales_cents = sum(payments.amount_cents - payments.tip_cents) for status=succeeded
+     * tips_cents = sum(payments.tip_cents) for status=succeeded
+     * tax_cents = sum(orders.tax_cents) for status=paid
+     * taxable_cents = sum(order_items.price_cents * quantity) for non-voided items where menu_item.taxable=true
+     * voids_cents = sum(orders.subtotal_cents + tax_cents) for orders.status=voided ON THE DATE (use voided_at, not opened_at)
+     * refunds_cents = sum(refunds.amount_cents) where created_at::date = report_date
+     * discounts_cents = 0 for MVP (no discount feature yet — placeholder for future)
+     * net_cents = gross_sales_cents + tips_cents - refunds_cents
+     * by_method: GROUP BY payments.method, count, sum(amount_cents - tip_cents)
+     * by_item: GROUP BY order_items.menu_item_id (only non-voided), sum quantity, sum price_cents*qty, compute pct_of_total
+     * by_staff: GROUP BY orders.opened_by_staff_id, count distinct order_id, sum gross, sum tip
+   - Date boundary: a row counts for date X if its created_at falls within X tenant-local 00:00:00 to 23:59:59. Pass tenant timezone as a parameter.
+   - All math in integer cents; never decimal
+
+4. apps/pos-api/src/lib/reports.test.ts — extensive unit tests:
+   - Empty-day: no orders → all zeros
+   - Single cash sale, no tip → gross_sales=400, tips=0, by_method=[{method:'cash',count:1,gross:400}]
+   - Multiple sales different methods → by_method aggregates correctly
+   - Voided order excluded from gross
+   - Voided order counted in voids_cents and voided_order_count
+   - Refund on the same day reduces net
+   - Tip calculation correct
+   - by_item percentages sum to 100% (within 0.5% rounding tolerance)
+   - by_staff aggregation correct
+   - Items where menu_item is null (e.g., deleted menu item) handled gracefully
+   - Timezone boundary: order created 23:55 of date X stays in date X; 00:05 next day goes to next day
+   - At least 12 unit tests in this file
+
+═══════════════════════════════════════
+SECTION 4 — pos-api routes
+═══════════════════════════════════════
+
+5. apps/pos-api/src/routes/reports/end-of-day.ts:
+   - GET /v1/reports/end-of-day — session-only (owner+manager); requireRole(['owner', 'manager'])
+   - Query params validated by GetEndOfDayQuerySchema
+   - Logic:
+     * If date == today (tenant-local): run live aggregation, return is_snapshot=false
+     * If date < today: try reports_daily lookup; if exists return is_snapshot=true; if not, run live aggregation, return is_snapshot=false (snapshot will populate when next cron fires)
+     * If date > today: 400 with code 'date_in_future'
+     * If date older than 90 days: still works, but log info that this is a rare query
+   - Pass tenant timezone from tenant row (default 'America/Chicago' from foundation)
+   - Returns EndOfDayReportSchema-shaped JSON
+
+6. apps/pos-api/src/routes/reports/csv.ts:
+   - GET /v1/reports/end-of-day.csv — session-only; same query params
+   - Returns text/csv with Content-Disposition: attachment; filename="report-{date}.csv"
+   - Format: standard daily summary on top rows, blank, then by_item rows, blank, then by_staff rows, blank, then by_method rows
+   - Use csv-stringify@^6 (mature, no nonsense) — add to deps
+   - All money formatted as decimal dollars in CSV (e.g., "12.50") for spreadsheet readability — convert from cents at the boundary
+
+7. apps/pos-api/src/routes/reports/list.ts:
+   - GET /v1/reports/daily-history — session-only; query: location_id (optional), limit (default 30, max 90)
+   - Returns array of ReportSummary { date, gross_sales_cents, net_cents, order_count } from reports_daily, descending by date
+   - For dashboard "last 30 days" sparkline use case
+
+8. Mount all three at /v1/reports.
+
+═══════════════════════════════════════
+SECTION 5 — pos-api: snapshot worker
+═══════════════════════════════════════
+
+9. apps/pos-api/src/workers/end-of-day-rollup.ts:
+   - BullMQ Worker subscribed to 'end-of-day-rollup' queue
+   - Job payload: { tenant_id, date }
+   - On job: load orders + items + payments + refunds + cash_events for the tenant on the specified date in tenant timezone, run aggregateEndOfDay, INSERT or UPDATE reports_daily row (UNIQUE constraint on tenant_id + location_id + date)
+   - is_final=true on snapshot
+   - Log [worker:end-of-day-rollup] on each step
+   - If tenant.email_daily_report=true: enqueue a receipt-style email job (reuse existing Resend wrapper) — subject "Your daily summary: {tenant.name} {date}"
+     * Email body: simple HTML table with the totals + by_method breakdown (skip by_item to keep email small; "see full report" link to dashboard URL when admin app exists; for now, link to /v1/reports/end-of-day.csv?date=... with a temporary owner-token approach — see step 11)
+     * Recipient: tenant.daily_report_recipient_email if set, else owner staff_member email
+     * If no recipient resolvable: log warning, skip email
+
+10. apps/pos-api/src/lib/queue.ts — extend existing queue setup:
+    - Add 'end-of-day-rollup' queue + worker
+    - Schedule: a repeating job every 5 minutes that checks all tenants' local time; for each tenant where local time is between 00:01 and 00:06, enqueues a one-off rollup job for the previous day (idempotent — uses tenant_id+date as job ID so duplicates collapse)
+    - Use BullMQ Repeatable jobs with cron pattern */5 * * * *
+    - When UPSTASH_REDIS_URL absent: log "[mock] cron disabled" and skip — same pattern as receipts batch
+    - This means all cron logic is in one place, not scattered
+
+11. (Defer) Owner-token approach for unauthenticated CSV download from email link: out of scope for this batch. The email body links to the daily summary route which 401s without auth, owner clicks → admin app login flow (when admin exists) → returns. For now, email body says "Sign in at pos.nuatis.com to view full report." Note this in code comments so we don't forget when admin app comes online.
+
+═══════════════════════════════════════
+SECTION 6 — Tests
+═══════════════════════════════════════
+
+12. Existing test: apps/pos-api/src/lib/reports.test.ts (already covered in step 4 — 12+ unit tests).
+
+13. apps/pos-api/src/routes/reports/reports.test.ts:
+    - Skip-graceful integration tests (need Supabase):
+      * GET /v1/reports/end-of-day for today → returns is_snapshot=false, computed live
+      * GET /v1/reports/end-of-day for yesterday before cron → is_snapshot=false (live)
+      * Manually insert a reports_daily row, GET → is_snapshot=true (snapshot)
+      * GET with future date → 400
+      * Cashier (terminal JWT) → 403 (session-only)
+      * Unauthenticated → 401
+    - Unit tests (always run):
+      * GetEndOfDayQuerySchema validation
+      * CSV serializer formats correctly given a fixture report
+
+14. apps/pos-api/src/workers/end-of-day-rollup.test.ts:
+    - Unit test: given fixture data, processRollup produces correct snapshot
+    - Unit test: idempotency — running rollup twice for same date produces same output (UPDATE not INSERT-INSERT)
+    - Unit test: when tenant.email_daily_report=false, no email job enqueued
+
+═══════════════════════════════════════
+SECTION 7 — Documentation
+═══════════════════════════════════════
+
+15. Update apps/pos-api/README.md:
+    - Routes: add /v1/reports/end-of-day, /v1/reports/end-of-day.csv, /v1/reports/daily-history
+    - Workers: document end-of-day-rollup cron pattern (every 5min check, fires at 00:01-00:06 tenant-local for previous day)
+    - Aggregation rules: brief explainer of what counts toward each total
+
+16. Add a brief "Reports architecture" section: snapshot-based, immutable history, refunds-after-close field tracks retroactive changes without rewriting historical totals.
+
+═══════════════════════════════════════
+SECTION 8 — Commit
+═══════════════════════════════════════
+
+17. From root: pnpm install (csv-stringify), pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (preserve baseline + add new unit tests).
+
+18. Commit + push:
+    - git add .
+    - git commit -m "feat(api): end-of-day reports + snapshot worker + CSV export + tenant daily email toggle"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add custom date-range reports (e.g., "last 7 days") — only single-day this batch
+- Do NOT add per-week or per-month rollups (deferred — daily snapshot is enough for MVP; weekly/monthly can re-aggregate from daily snapshots later)
+- Do NOT add admin UI for reports — Batch C
+- Do NOT add chart libraries or PDF report generation
+- Do NOT add tax-jurisdiction or sales-tax-by-region splits (single sales_tax_bps per location)
+- Do NOT add tip-pool distribution math (Phase 12 multi-vertical work)
+- Do NOT add commission-by-staff calculations (Phase 12)
+- Do NOT add report email scheduling UI (boolean toggle on tenant for now)
+- Do NOT modify orders, payments, cash, or receipts code beyond what's needed for aggregation
+- Do NOT add Stripe Terminal real integration
+- Do NOT touch artifacts/ folder
+
+TECH CONSTRAINTS
+- All money in cents; CSV converts to decimal at boundary only
+- Aggregation logic in pure functions in lib/reports.ts; route handlers just orchestrate
+- Snapshots are insert-or-update (UPSERT via ON CONFLICT) — idempotent
+- Cron uses BullMQ repeatable jobs, NOT Node setInterval (survives process restarts)
+- Tenant timezone defaults to America/Chicago when null (Texas POS users)
+- Date arithmetic uses date-fns or native Intl — NOT moment.js
+- Worker logs prefixed [worker:end-of-day-rollup]
+- Express routers IRouter annotation rule
+- ESM NodeNext .js suffix
+
+ACCEPTANCE
+1. packages/pos-shared/dist/reports.d.ts has all schemas
+2. Migration 0013 file exists; migrations 0001-0012 untouched
+3. apps/pos-api/src/lib/reports.ts has aggregateEndOfDay pure function
+4. apps/pos-api/src/lib/reports.test.ts has 12+ unit tests, all passing
+5. GET /v1/reports/end-of-day works for today (live) and historical dates (snapshot if exists)
+6. GET /v1/reports/end-of-day.csv returns valid CSV with Content-Disposition header
+7. GET /v1/reports/daily-history returns array from reports_daily
+8. End-of-day rollup worker: enqueues correctly, processes idempotently, sends email when toggle on
+9. Cron pattern */5 * * * * registered (or mock-mode logged if no Redis)
+10. pnpm typecheck → 0 errors
+11. pnpm test → preserves 76+ unit pass; new unit tests pass; integration tests skip-graceful
+12. README updated
+13. git status clean post-commit
+14. git log --oneline -1 matches commit message
+
+HARD STOP
+Stop after scope. Report:
+- Migration 0013 delta summary
+- Test counts (pass / skip / fail) — expected ~95 pass + ~40 skip
+- TS workarounds (especially around BullMQ repeatable job types and tenant timezone Date handling)
+- Confirm migrations 0001-0012 untouched
+- Confirm artifacts/ untouched
+- Open questions for Batch 13 (which is Batch C — admin app scaffold; expect questions about Next.js 14 App Router setup, shared design tokens between admin and prototype, deployment to Vercel vs same Replit, and whether to put it at apps/pos-admin in the workspace or a separate repo)
+
+Wait for next prompt.
