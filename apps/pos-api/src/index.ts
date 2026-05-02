@@ -8,6 +8,7 @@ import { errorHandler } from "./middleware/error-handler.js";
 import { healthRouter } from "./routes/health.js";
 import { authRouter } from "./routes/auth.js";
 import { menuRouter } from "./routes/menu/index.js";
+import { ordersRouter } from "./routes/orders/index.js";
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use("/v1", healthRouter);
 app.use("/v1/auth", authRouter);
 app.use("/v1/menu", menuRouter);
+app.use("/v1/orders", ordersRouter);
 
 // Error handler — must be last
 app.use(errorHandler);

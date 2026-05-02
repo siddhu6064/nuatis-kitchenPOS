@@ -44,6 +44,42 @@ export async function assertTenantOwns(
 }
 
 // ---------------------------------------------------------------------------
+// Order total recalculation — call after any item add/void
+// ---------------------------------------------------------------------------
+
+/**
+ * Sums price_cents * qty for all non-voided order_items, persists
+ * the result to orders.subtotal_cents, and returns the new subtotal.
+ */
+export async function recalcOrderTotals(
+  client: SupabaseClient,
+  order_id: string,
+  tenant_id: string
+): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = client as any;
+
+  const { data: items } = await db
+    .from("order_items")
+    .select("price_cents, qty")
+    .eq("order_id", order_id)
+    .neq("status", "voided");
+
+  const subtotal_cents: number = ((items ?? []) as { price_cents: number; qty: number }[]).reduce(
+    (sum, row) => sum + row.price_cents * row.qty,
+    0
+  );
+
+  await db
+    .from("orders")
+    .update({ subtotal_cents })
+    .eq("id", order_id)
+    .eq("tenant_id", tenant_id);
+
+  return subtotal_cents;
+}
+
+// ---------------------------------------------------------------------------
 // Audit log helper — fire-and-forget
 // ---------------------------------------------------------------------------
 export function writeAuditLog(
