@@ -1,0 +1,172 @@
+▶ PROMPT [Phase 0 · Batch 8 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-7 complete: 9 migrations, full API (auth + menu + orders), prototype wired as integration testbed. All unit tests pass; 27 integration tests skip gracefully because no Supabase is running. This batch installs the Supabase CLI in the Replit environment, starts a local Supabase via `supabase start` (Docker), applies all 9 migrations + seed.sql, configures pos-api .env to point at the local instance, runs the integration test suite to activate the 27 skipped tests, and smoke-tests the prototype end-to-end against real Postgres.
+
+GOAL
+A working full-stack demo: pos-api running on :3002 connected to local Supabase on :54322, prototype on :5173 signing in with PIN 1234 against real seeded data, building an order, sending to kitchen, mock-paying — every action persisting to local Postgres. All 56 vitest tests passing (29 unit + 27 previously-skipped integration).
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — Supabase CLI + start local
+═══════════════════════════════════════
+
+1. Install Supabase CLI:
+   - Try `npm i -g supabase` first (works on most environments including Replit)
+   - If that fails or pollutes globals, fall back to `npx supabase` for all commands and document it in the README
+   - Verify with `supabase --version`
+
+2. Initialize / start local Supabase:
+   - From repo root: `supabase start` (uses supabase/config.toml from Batch 1)
+   - This spins up Postgres + Auth + Realtime + Storage + Studio in Docker
+   - Capture the output: Studio URL (typically http://localhost:54323), anon key, service_role key, JWT secret
+   - If Docker isn't available in the Replit env, document that fact clearly and STOP — report to user; do not fabricate alternatives
+
+3. Apply all migrations:
+   - `supabase db reset` (this drops the local DB, re-runs ALL migrations 0001-0009 + seed.sql in sequence)
+   - Verify via `supabase db diff` returns empty (no schema drift)
+   - Run a sanity query (via `supabase db psql` or psql directly): `select count(*) from menu_items;` should return 12
+
+═══════════════════════════════════════
+SECTION 2 — Wire pos-api to local Supabase
+═══════════════════════════════════════
+
+4. Create apps/pos-api/.env (NOT .env.example) with the local Supabase values from `supabase start` output:
+   - PORT=3002
+   - NODE_ENV=development
+   - LOG_LEVEL=debug
+   - SUPABASE_URL=http://localhost:54321
+   - SUPABASE_SERVICE_ROLE_KEY=<service_role from supabase start output>
+   - POS_JWT_SECRET=<generate with openssl rand -base64 32 — DEV ONLY>
+   - CORS_ALLOWED_ORIGINS=http://localhost:5173
+
+5. Verify .env is gitignored — `git check-ignore apps/pos-api/.env` should output the path.
+
+6. Boot pos-api in background: `pnpm -F @nuatis/pos-api dev &` (or use a tmux/screen pattern Agent prefers)
+
+7. Smoke-test:
+   - curl http://localhost:3002/v1/health → expect status:'ok', supabase:'connected'
+   - curl -X POST http://localhost:3002/v1/auth/sign-in -H "Content-Type: application/json" -d '{"email":"owner@democafe.test","password":"demo1234"}' → expect 200 + JWT
+   - With that JWT: curl http://localhost:3002/v1/menu/tree -H "Authorization: Bearer <token>" → expect categories array with seeded data
+
+═══════════════════════════════════════
+SECTION 3 — Activate integration tests
+═══════════════════════════════════════
+
+8. With local Supabase running and pos-api .env set:
+   - `pnpm -F @nuatis/pos-api test` — should now run all tests including the 27 previously-skipped
+   - Expected: 56 pass, 0 skip (or document any that legitimately still skip)
+   - If tests fail, report the failure exactly — DO NOT fix bugs in this batch unless they're trivial wiring issues; instead report and ask
+
+9. If any tests pass that previously skipped but expose a bug (e.g., RLS policy too restrictive, missing column from seed), document and report. Do not silently patch.
+
+═══════════════════════════════════════
+SECTION 4 — Wire prototype to local API
+═══════════════════════════════════════
+
+10. Create artifacts/nuatis-pos/.env (NOT .env.example) with values matching seed.sql:
+    - VITE_API_BASE_URL=http://localhost:3002
+    - VITE_DEMO_TENANT_ID=00000000-0000-0000-0000-000000000001
+    - VITE_DEMO_LOCATION_ID=<read from seed.sql; this is the location row's UUID>
+    - VITE_DEMO_STAFF_ID=<read from seed.sql; this is the owner staff_member's UUID>
+    - PORT=5173
+    - BASE_PATH=/
+
+11. Verify .env is gitignored.
+
+12. Boot prototype: `cd artifacts/nuatis-pos && pnpm dev` (in background or separate shell)
+
+13. Smoke-test in browser (Agent should describe verifiable steps even if it can't actually click):
+    - Open http://localhost:5173
+    - Sign-in screen appears with demo UUIDs pre-filled
+    - Enter PIN 1234, submit
+    - Menu grid renders with 12 items (6 drinks + 6 food) from real DB
+    - Tap "Espresso" to add to cart
+    - Tap "Send to Kitchen" — order moves to fired status (verify via curl on the API)
+    - Proceed through Tap to Pay flow with mock payment + 20% tip
+    - Reach Approved screen
+    - Verify: `select * from orders where status='paid' order by created_at desc limit 1` shows the order
+    - Verify: `select * from payments where status='succeeded' order by created_at desc limit 1` shows the payment
+
+14. If the smoke test fails at any step, report the exact failure (HTTP code, error message, DB state) — do not silently fix.
+
+═══════════════════════════════════════
+SECTION 5 — Documentation updates
+═══════════════════════════════════════
+
+15. Update root README.md (create if missing) with a "Local Development" section:
+    - Prerequisites: Docker, pnpm, Supabase CLI
+    - Step 1: clone + pnpm install
+    - Step 2: from root run `supabase start` → wait for "Started supabase local development setup"
+    - Step 3: copy .env.example to .env in apps/pos-api/ and artifacts/nuatis-pos/, fill in values from `supabase start` output
+    - Step 4: `pnpm -F @nuatis/pos-api dev` (terminal 1) + `cd artifacts/nuatis-pos && pnpm dev` (terminal 2)
+    - Step 5: open http://localhost:5173, sign in with PIN 1234
+    - Demo credentials: owner@democafe.test / demo1234, PIN 1234
+    - Stop everything: `supabase stop` to tear down Docker containers
+    
+16. Update apps/pos-api/README.md and artifacts/nuatis-pos/README.md to point at the root README's local dev section (avoid duplicating instructions).
+
+17. Create supabase/LOCAL_DEV.md (or extend supabase/README.md) documenting:
+    - How `supabase start` works
+    - Studio URL (http://localhost:54323) — useful for inspecting tables visually
+    - How to reset local DB: `supabase db reset` (re-applies all migrations + seed)
+    - How to apply a new migration without resetting: `supabase db push`
+    - How to dump current schema for review: `supabase db diff`
+
+═══════════════════════════════════════
+SECTION 6 — Commit + push
+═══════════════════════════════════════
+
+18. git add . (note: .env files NOT included, gitignored)
+19. git commit -m "feat(infra): local supabase + activate integration tests + e2e smoke test"
+20. git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT create a remote Supabase project (that's a later batch when we go pilot)
+- Do NOT migrate to production Supabase
+- Do NOT install Supabase CLI globally if it pollutes Replit's environment — fall back to npx
+- Do NOT modify any migrations 0001-0009 (immutable history)
+- Do NOT add new API routes, new schemas, new tests beyond what's needed to activate existing integration tests
+- Do NOT add KDS screen (Batch 9)
+- Do NOT add Stripe Terminal Web SDK (Batch 10)
+- Do NOT add pos-admin Next.js
+- Do NOT silently fix bugs exposed by integration tests; report them
+- Do NOT seed additional data beyond what's in seed.sql (no "starter restaurant" yet)
+
+TECH CONSTRAINTS
+- Local Supabase requires Docker — Replit's environment may or may not have it; verify before assuming
+- .env files NEVER committed; only .env.example
+- All curl smoke tests use the local API base URL (http://localhost:3002)
+- Demo credentials are committed in seed.sql and root README — this is intentional (dev-only)
+- If `supabase start` takes more than 60 seconds, document the timing in the report (it's normal — first run pulls Docker images)
+- Do NOT use sudo or modify system packages; everything in user-space
+
+ACCEPTANCE
+1. `supabase --version` returns a version string
+2. `supabase start` succeeds and reports Studio URL
+3. `select count(*) from menu_items;` returns 12 (seeded data applied)
+4. apps/pos-api/.env exists, gitignored, populated with local values
+5. pos-api boots and /v1/health returns supabase:'connected'
+6. POST /v1/auth/sign-in with demo creds returns valid JWT
+7. GET /v1/menu/tree with that JWT returns the seeded menu
+8. `pnpm -F @nuatis/pos-api test` passes 56 tests (or document deviations)
+9. artifacts/nuatis-pos/.env exists, gitignored, has working VITE_DEMO_*
+10. Prototype dev server boots on :5173
+11. Sign-in PIN 1234 produces a valid terminal JWT (verifiable via SQL query against staff_members + check audit_log entry)
+12. End-to-end order flow completes: order created → item added → kitchen fire → mock-pay → paid status — verifiable via SQL queries
+13. Root README documents the full local dev setup
+14. git status clean; .env files NOT in commit
+15. git log --oneline -1 matches spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Output of `supabase start` (timing, ports assigned)
+- Output of `pnpm -F @nuatis/pos-api test` (full pass/skip/fail breakdown)
+- Any test failures that exposed real bugs vs. wiring issues
+- Smoke test results: each step pass/fail with the exact API response or DB state observed
+- Confirm migrations 0001-0009 untouched
+- Confirm artifacts/ source code untouched (only .env added there)
+- Open questions for Batch 9: KDS screen subscribes to Supabase Realtime broadcast OR table changefeed — which pattern; should KDS be added to artifacts/nuatis-pos as a /kds route OR as a separate apps/pos-kds Next.js app
+
+Wait for next prompt.
