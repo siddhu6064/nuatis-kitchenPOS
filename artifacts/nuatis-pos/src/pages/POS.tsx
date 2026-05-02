@@ -56,7 +56,6 @@ export function POS() {
   }, [lines, totals.subtotal, totals.tax, tipAmount, grandTotal]);
 
   const handleViewReceipt = () => {
-    // Ensure we have the latest saved order
     const order = lastOrder ?? loadLastOrder();
     setLastOrder(order);
     setStep("receipt");
@@ -94,27 +93,42 @@ export function POS() {
 
   return (
     <>
-      {/* Main POS shell — always rendered underneath overlays */}
+      {/* Main POS shell */}
       <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
-        <header className="flex items-center justify-between px-6 py-3 bg-white border-b border-slate-200 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="w-7 h-7 rounded-md bg-amber-500 flex items-center justify-center">
+        {/* Header — 56px, slim */}
+        <header className="h-14 flex items-center justify-between px-6 bg-white border-b border-slate-200 shrink-0">
+          {/* Wordmark */}
+          <div className="flex items-center gap-2.5">
+            <span className="w-7 h-7 rounded-md bg-brand flex items-center justify-center">
               <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M3 4a1 1 0 0 1 1-1h12a1 1 0 0 1 .994.89l.006.11v3a3 3 0 0 1-3 3H6A3 3 0 0 1 3 7V4Zm0 7a5.002 5.002 0 0 0 4.472 4.972L8 16H7a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-1l.528-.028A5.002 5.002 0 0 0 17 11H3Z" />
               </svg>
             </span>
-            <span className="font-semibold text-slate-900 tracking-tight">Nuatis POS</span>
-            <span className="text-slate-400 text-sm">·</span>
-            <span className="text-slate-500 text-sm">Cafe</span>
+            <span className="font-serif font-semibold text-slate-900 tracking-tight leading-none">
+              Nuatis POS
+            </span>
+            <span className="font-mono text-[11px] text-slate-400 uppercase tracking-wider leading-none">
+              · Cafe
+            </span>
             {itemCount > 0 && (
-              <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
-                {itemCount} {itemCount === 1 ? "item" : "items"}
+              <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-brand text-white">
+                {itemCount}
               </span>
             )}
           </div>
 
+          {/* Right side: user info + DEMO badge + logout */}
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-600 font-medium">{displayName}</span>
+            <span
+              className="
+                font-mono text-[10px] font-medium tracking-widest uppercase
+                px-2 py-1 rounded border border-brand text-brand
+                select-none
+              "
+            >
+              DEMO
+            </span>
             <button
               onClick={logout}
               className="text-sm px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 active:bg-slate-100 transition-colors duration-100"

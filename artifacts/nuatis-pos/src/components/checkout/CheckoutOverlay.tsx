@@ -115,19 +115,19 @@ export function CheckoutOverlay({
                       className={`
                         flex flex-col items-center justify-center py-3 px-2 rounded-xl border-2 transition-all duration-100
                         ${isSelected
-                          ? "border-amber-500 bg-amber-50"
+                          ? "border-brand bg-brand text-white shadow-sm"
                           : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}
                       `}
                     >
-                      <span className={`text-sm font-bold ${isSelected ? "text-amber-700" : "text-slate-800"}`}>
+                      <span className={`text-sm font-bold ${isSelected ? "text-white" : "text-slate-800"}`}>
                         {preset.label}
                       </span>
                       {preset.key !== "custom" ? (
-                        <span className={`text-xs mt-0.5 tabular-nums ${isSelected ? "text-amber-600" : "text-slate-500"}`}>
+                        <span className={`text-xs mt-0.5 tabular-nums ${isSelected ? "text-blue-100" : "text-slate-500"}`}>
                           ${fmt(amount)}
                         </span>
                       ) : (
-                        <span className={`text-xs mt-0.5 tabular-nums ${isSelected ? "text-amber-600" : "text-slate-500"}`}>
+                        <span className={`text-xs mt-0.5 tabular-nums ${isSelected ? "text-blue-100" : "text-slate-500"}`}>
                           {customTipAmount > 0 ? `$${fmt(customTipAmount)}` : "Enter"}
                         </span>
                       )}
@@ -167,8 +167,8 @@ export function CheckoutOverlay({
             onClick={onCharge}
             className="
               w-full py-4 rounded-xl text-base font-semibold
-              bg-amber-500 text-white
-              hover:bg-amber-600 active:bg-amber-700
+              bg-brand text-white
+              hover:bg-blue-700 active:bg-blue-800
               transition-colors duration-100
             "
           >

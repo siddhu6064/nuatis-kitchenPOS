@@ -33,11 +33,11 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
             <p className="text-slate-400 text-xs mt-1">Tap a menu item to start an order.</p>
           </div>
         ) : (
-          <ul className="space-y-1">
+          <ul className="divide-y divide-slate-100">
             {lines.map(({ item, qty }) => (
               <li
                 key={item.id}
-                className="relative flex items-center gap-3 py-3 border-b border-slate-50 last:border-0"
+                className="relative flex items-center gap-3 py-3 last:border-0"
               >
                 <button
                   onClick={() => onRemove(item.id)}
@@ -53,8 +53,8 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                 </button>
 
                 <div className="flex-1 min-w-0 pr-8">
-                  <p className="text-slate-800 text-sm font-semibold leading-tight truncate">{item.name}</p>
-                  <p className="text-slate-400 text-xs mt-0.5">${fmt(item.price)} each</p>
+                  <p className="text-slate-800 text-sm font-medium leading-tight truncate">{item.name}</p>
+                  <p className="text-slate-400 text-xs mt-0.5 tabular-nums">${fmt(item.price)} each</p>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -80,8 +80,8 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                     aria-label={`Increase quantity of ${item.name}`}
                     className="
                       w-[44px] h-[44px] flex items-center justify-center
-                      rounded-lg bg-amber-50 border border-amber-200 text-amber-700
-                      hover:bg-amber-100 active:bg-amber-200
+                      rounded-lg bg-blue-50 border border-blue-200 text-brand
+                      hover:bg-blue-100 active:bg-blue-200
                       transition-colors duration-100
                     "
                   >
@@ -98,7 +98,7 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
         )}
       </div>
 
-      <div className="px-5 py-4 border-t border-slate-100 space-y-2">
+      <div className="px-5 pt-5 pb-4 border-t border-slate-100 space-y-2">
         <div className="flex justify-between text-sm text-slate-600">
           <span>Subtotal</span>
           <span className="tabular-nums">${fmt(totals.subtotal)}</span>
@@ -107,19 +107,18 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
           <span>Tax (8.25%)</span>
           <span className="tabular-nums">${fmt(totals.tax)}</span>
         </div>
-        <div className="flex justify-between text-base font-bold text-slate-900 pt-2 border-t border-slate-200">
+        <div className="flex justify-between text-base font-bold text-slate-900 pt-3 border-t border-slate-200">
           <span>Total</span>
           <span className="tabular-nums">${fmt(totals.grandTotal)}</span>
         </div>
 
-        {/* Charge button */}
         <button
           onClick={onCharge}
           disabled={isEmpty}
           className="
             w-full mt-2 py-3.5 rounded-xl text-sm font-semibold
-            bg-amber-500 text-white
-            hover:bg-amber-600 active:bg-amber-700
+            bg-brand text-white
+            hover:bg-blue-700 active:bg-blue-800
             disabled:opacity-40 disabled:cursor-not-allowed
             transition-colors duration-100
           "

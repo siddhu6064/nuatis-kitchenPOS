@@ -1,0 +1,124 @@
+▶ PROMPT [Phase 2 · Batch 5 · Replit Agent · FINAL]
+
+CONTEXT
+Cafe POS prototype is functionally complete end-to-end through Batch 4:
+auth → menu → cart with controls → checkout → tip → mock pay → approved →
+printable receipt → new order. This final batch is visual polish + the
+disclaimer README so the demo looks intentional, then mothball.
+Repo: github.com/siddhu6064/nuatis-kitchenPOS.
+
+GOAL
+Prototype reads as a deliberate, designed product (not a Replit Agent default),
+and the repo carries a clear "this is a throwaway prototype" disclaimer so
+anyone landing on the GitHub page understands the context.
+
+SCOPE — BUILD THIS
+1. Typography — load Inter for body and a serif (Lora or Fraunces) for headers.
+     Apply: serif for "Nuatis POS" wordmark in header and Approved screen
+     headline; Inter everywhere else
+2. Color refinement — single accent color throughout: blue #0047FF for primary
+     buttons (Charge, Tap to Pay, New Order on receipt), emerald-600 stays only
+     on the Approved screen. Replace any leftover amber/zinc default accents on
+     interactive elements with #0047FF
+3. Header polish — slimmer, ~56px tall, "Nuatis POS" in serif, "· Cafe" in
+     mono small caps gray, item-count pill in #0047FF (white text)
+4. Menu tile polish — softer shadow, 8px corner radius, hover state with
+     subtle lift (translate-y-0.5), press state with scale-95, item names in
+     medium weight, prices in tabular-nums
+5. Cart sidebar polish — clearer visual separation between line items
+     (1px hairline divider, not full border), totals block with extra top
+     padding so it breathes
+6. Checkout overlay polish — order summary lines use tabular-nums for amounts,
+     tip preset buttons get a clear selected state (blue ring + filled blue bg
+     when active), Custom tip button matches preset visual weight
+7. Tap-to-Pay screen polish — increase pulse animation contrast, total in
+     larger serif at top
+8. Approved screen polish — ensure check icon is large (96px+), totals
+     breakdown in tabular-nums, buttons have proper visual hierarchy
+9. Favicon + page title — set page title to "Nuatis POS · Cafe Demo",
+     replace default Vite favicon with a simple "N" mark (SVG, blue #0047FF
+     background, white letter)
+10. README.md — replace default Replit/Vite README with this exact content,
+     adapted for actual repo URL and dates:
+       # Nuatis POS — Cafe Prototype
+       
+       Throwaway UX prototype for a cafe point-of-sale flow. Built in one day
+       on Replit Agent to validate tablet checkout flows for the Nuatis POS
+       product.
+       
+       ## ⚠️ This is not production code
+       
+       - No backend, no real Stripe, no real auth beyond Replit's gate
+       - State is localStorage only — clears with browser data
+       - Mock payments auto-approve after 2.5s, no real card processing
+       - Single hardcoded cafe menu, single hardcoded merchant
+       - Stack is React + Vite (production build will be Next.js 14)
+       - Architecture, data model, and tech choices here do NOT carry forward
+       
+       ## What it demonstrates
+       
+       - Login → menu → cart → checkout → tip → mock pay → approved → receipt
+       - Tablet-optimized layout (1024×768)
+       - localStorage cart persistence across refresh
+       - Printable receipt with thermal-printer @media print stylesheet
+       
+       ## Production build
+       
+       The real Nuatis POS is a separate codebase, mothballed until the
+       Nuatis Suite ships (Aug 2026+). See internal Master Plan docs for
+       scope, architecture, and roadmap.
+       
+       ---
+       Built by Siddhu · Nuatis LLC
+
+11. Add a small "DEMO" badge in the top-right corner of the header, blue
+     outline, JetBrains Mono font, to make the prototype state explicit
+     during screenshots/demos
+
+SCOPE — DO NOT BUILD
+- Order history (out of scope, never was scoped)
+- Any new functional features
+- Animations beyond what already exists
+- Dark mode
+- Mobile phone responsive layout (tablet+ only by design)
+
+TECH CONSTRAINTS
+- Stay on React + Vite, Tailwind v3, lucide-react
+- Load fonts via Google Fonts <link> in index.html, not via npm
+- Inter weights: 400, 500, 600. Lora weights: 500, 600
+- All accent color usage as #0047FF — add as Tailwind config extension
+     `colors: { brand: { DEFAULT: '#0047FF' } }` so classes like `bg-brand`
+     `text-brand` `ring-brand` work consistently
+- tabular-nums on every $ amount for clean column alignment
+
+ACCEPTANCE
+- Page title shows "Nuatis POS · Cafe Demo" in browser tab
+- Custom "N" favicon visible in tab
+- Header reads with serif wordmark + "DEMO" badge top-right
+- Single blue (#0047FF) primary accent throughout — no leftover amber/orange
+     on interactive primary buttons
+- All $ amounts use tabular-nums (visually verify columns align)
+- Tip preset selected state is unambiguous (blue ring + fill)
+- Hover/press states feel responsive on menu tiles
+- README.md contents exactly match scope item 10
+- Approved screen still uses emerald (only place green appears)
+- Print preview unchanged — still clean receipt only
+
+GIT — REQUIRED AT END
+Stage all changes. Provide the exact commands for Sid to run in Shell:
+  git add .
+  git commit -m "feat(batch-5): visual polish and README disclaimer"
+  git push origin main
+Confirm everything is staged and ready. Note in report that git push is
+manual due to environment constraints.
+
+STANDING INSTRUCTION (UPDATED)
+Replit Agent cannot execute git commands directly in this environment. At
+the end of every batch, stage all changes and report the exact commit +
+push commands for Sid to run in the Shell tab. Include the intended commit
+message in the format `feat(batch-N): <short description>`.
+
+HARD STOP
+Stop after scope. Report built / errors / skipped / open questions /
+commit commands. Wait for next prompt — but note: this is the final batch
+of prototype day. After Sid pushes, prototype is shipped and mothballed.

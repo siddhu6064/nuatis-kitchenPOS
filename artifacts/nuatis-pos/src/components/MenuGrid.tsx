@@ -17,11 +17,12 @@ export function MenuGrid({ onTap }: Props) {
               className={`
                 ${colors.bg}
                 flex flex-col items-start justify-between
-                rounded-xl p-4 min-h-[140px] w-full text-left
-                border border-transparent
-                active:scale-[0.97] transition-all duration-100
-                hover:shadow-md hover:border-slate-200
-                focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500
+                rounded-lg p-4 min-h-[140px] w-full text-left
+                border border-transparent shadow-sm
+                hover:shadow-md hover:-translate-y-0.5 hover:border-slate-200
+                active:scale-95 active:shadow-sm active:translate-y-0
+                focus:outline-none focus-visible:ring-2 focus-visible:ring-brand
+                transition-all duration-100
               `}
             >
               <div className="flex items-center gap-1.5 mb-2">
@@ -30,10 +31,10 @@ export function MenuGrid({ onTap }: Props) {
                   {item.category}
                 </span>
               </div>
-              <span className="text-slate-900 font-semibold text-base leading-snug flex-1">
+              <span className="text-slate-900 font-medium text-base leading-snug flex-1">
                 {item.name}
               </span>
-              <span className="mt-2 text-slate-700 font-bold text-lg">
+              <span className="mt-2 text-slate-700 font-bold text-lg tabular-nums">
                 ${item.price.toFixed(2)}
               </span>
             </button>
