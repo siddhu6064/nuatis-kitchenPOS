@@ -6,11 +6,12 @@ import { CheckoutOverlay, type TipOption } from "@/components/checkout/CheckoutO
 import { TipKeypad } from "@/components/checkout/TipKeypad";
 import { TapToPayScreen } from "@/components/checkout/TapToPayScreen";
 import { ApprovedScreen } from "@/components/checkout/ApprovedScreen";
+import { ReceiptScreen } from "@/components/checkout/ReceiptScreen";
 import { useCart } from "@/hooks/useCart";
 import { calcTipFromPct, calcGrandTotal } from "@/lib/tipMath";
-import { saveLastOrder } from "@/lib/lastOrder";
+import { saveLastOrder, loadLastOrder, clearLastOrder, type LastOrder } from "@/lib/lastOrder";
 
-type CheckoutStep = "cart" | "tip-select" | "tap-to-pay" | "approved";
+type CheckoutStep = "cart" | "tip-select" | "tap-to-pay" | "approved" | "receipt";
 
 const TIP_PCT: Record<Exclude<TipOption, "custom" | "none">, number> = {
   "15": 0.15,
@@ -27,6 +28,7 @@ export function POS() {
   const [customTipAmount, setCustomTipAmount] = useState(0);
   const [keypadValue, setKeypadValue] = useState("");
   const [showKeypad, setShowKeypad] = useState(false);
+  const [lastOrder, setLastOrder] = useState<LastOrder | null>(null);
 
   // Derived tip + totals
   const tipAmount =
@@ -49,19 +51,27 @@ export function POS() {
 
   const handleApproved = useCallback(() => {
     saveLastOrder(lines, totals.subtotal, totals.tax, tipAmount, grandTotal);
+    setLastOrder(loadLastOrder());
     setStep("approved");
   }, [lines, totals.subtotal, totals.tax, tipAmount, grandTotal]);
 
+  const handleViewReceipt = () => {
+    // Ensure we have the latest saved order
+    const order = lastOrder ?? loadLastOrder();
+    setLastOrder(order);
+    setStep("receipt");
+  };
+
+  const handleBackToApproved = () => setStep("approved");
+
   const handleNewOrder = () => {
     clearCart();
+    clearLastOrder();
     setSelectedTip("18");
     setCustomTipAmount(0);
     setKeypadValue("");
+    setLastOrder(null);
     setStep("cart");
-  };
-
-  const handleViewReceipt = () => {
-    console.log("receipt view requested");
   };
 
   const handleOpenKeypad = () => {
@@ -170,6 +180,15 @@ export function POS() {
           grandTotal={grandTotal}
           onNewOrder={handleNewOrder}
           onViewReceipt={handleViewReceipt}
+        />
+      )}
+
+      {/* Receipt */}
+      {step === "receipt" && (
+        <ReceiptScreen
+          order={lastOrder ?? loadLastOrder()}
+          onBackToApproved={handleBackToApproved}
+          onNewOrder={handleNewOrder}
         />
       )}
     </>

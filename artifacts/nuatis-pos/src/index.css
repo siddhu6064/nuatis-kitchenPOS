@@ -114,3 +114,38 @@
     @apply font-sans antialiased bg-background text-foreground;
   }
 }
+
+@media print {
+  /* Hide all app chrome — only the receipt card should print */
+  body > * { display: none !important; }
+
+  /* Show the receipt overlay */
+  body > div:has(#receipt-body),
+  .fixed:has(#receipt-body) {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+  }
+
+  /* Hide action bars inside the receipt overlay */
+  .print\:hidden { display: none !important; }
+
+  /* Receipt card styles */
+  #receipt-body {
+    display: block !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 80mm !important; /* thermal 80mm width */
+    page-break-inside: avoid;
+  }
+
+  /* Remove background colors */
+  * {
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

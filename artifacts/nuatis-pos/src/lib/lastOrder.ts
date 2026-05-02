@@ -27,3 +27,17 @@ export function saveLastOrder(lines: CartLine[], subtotal: number, tax: number, 
   };
   localStorage.setItem(LAST_ORDER_KEY, JSON.stringify(order));
 }
+
+export function loadLastOrder(): LastOrder | null {
+  try {
+    const raw = localStorage.getItem(LAST_ORDER_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as LastOrder;
+  } catch {
+    return null;
+  }
+}
+
+export function clearLastOrder(): void {
+  localStorage.removeItem(LAST_ORDER_KEY);
+}
