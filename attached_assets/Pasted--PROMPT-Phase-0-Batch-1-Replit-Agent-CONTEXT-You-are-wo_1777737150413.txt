@@ -1,0 +1,127 @@
+▶ PROMPT [Phase 0 · Batch 1 · Replit Agent]
+
+CONTEXT
+You are working in the existing repo `siddhu6064/nuatis-kitchenPOS`, currently containing only the throwaway prototype at `artifacts/nuatis-pos`. We are now starting the production database layer for Nuatis POS — a multi-tenant, service-business POS. This batch creates the `supabase/` folder with versioned SQL migrations only. NO Supabase project linking, NO push to remote, NO code referencing these tables. Pure schema-as-code that we will apply to a new Supabase project later.
+
+GOAL
+Create a complete, reviewable `supabase/` folder at the repo root with 6 numbered migration files, a seed file, a README, and root-package.json scripts — committed and pushed to main.
+
+SCOPE — BUILD THIS
+
+1. Create folder `supabase/` at repo root (sibling to `artifacts/`).
+
+2. Create `supabase/config.toml` with standard Supabase CLI config (project_id placeholder `nuatis-pos`, db port 54322, api port 54321, studio port 54323, default major_version = 15).
+
+3. Migration 1 — `supabase/migrations/20260502120000_init_foundation.sql`
+   Creates these tables, ALL with `tenant_id uuid NOT NULL` and RLS enabled:
+   - `tenants` (id uuid PK, name text, vertical text, timezone text default 'America/Chicago', created_at timestamptz default now())
+   - `locations` (id uuid PK, tenant_id, name, address jsonb, sales_tax_bps int default 825, business_hours jsonb, created_at)
+   - `staff_members` (id uuid PK, tenant_id, location_ids uuid[], full_name text, email text, role text check role in ('owner','manager','cashier'), pin_hash text, created_at)
+   - `contacts` (id uuid PK, tenant_id, full_name text, phone text, email text, sms_opt_in boolean default false, sms_opt_in_at timestamptz, notes text, created_at, updated_at)
+   - `audit_log` (id bigserial PK, tenant_id, staff_id, action text, target_type text, target_id text, payload jsonb, ip_address inet, created_at default now())
+   
+   For every table: `ALTER TABLE x ENABLE ROW LEVEL SECURITY;` and policy `CREATE POLICY tenant_isolation ON x USING (tenant_id = (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::uuid);`
+   
+   Indexes on every `tenant_id` column. Index on `contacts(tenant_id, phone)` and `contacts(tenant_id, email)`.
+
+4. Migration 2 — `supabase/migrations/20260502120100_menu.sql`
+   Tables (all multi-tenant + RLS):
+   - `menu_categories` (id, tenant_id, name, sort_order int, deleted_at timestamptz, created_at)
+   - `menu_items` (id, tenant_id, category_id, name, price_cents int, taxable bool default true, image_url text, kitchen_station text, deleted_at, created_at)
+   - `modifier_groups` (id, tenant_id, name, min_select int default 0, max_select int default 1, required bool default false, deleted_at, created_at)
+   - `modifier_options` (id, group_id references modifier_groups, name, price_delta_cents int default 0, sort_order int)
+   - `menu_item_modifier_groups` (item_id, group_id, sort_order, PK on (item_id, group_id))
+   
+   Same RLS pattern. FK constraints with ON DELETE CASCADE where appropriate.
+
+5. Migration 3 — `supabase/migrations/20260502120200_orders.sql`
+   Tables (multi-tenant + RLS):
+   - `orders` (id uuid PK, tenant_id, location_id, opened_by_staff_id, contact_id nullable, status text check status in ('open','fired','paid','voided'), vertical text, subtotal_cents, tax_cents, tip_cents, total_cents, opened_at, closed_at)
+   - `order_items` (id uuid PK, order_id, menu_item_id, name_snapshot text, qty int, price_cents int, modifiers_json jsonb, course int default 1, kitchen_station text, status text check status in ('open','fired','bumped'), provider_staff_id nullable, fired_at, bumped_at)
+   
+   At the bottom of this migration: `ALTER PUBLICATION supabase_realtime ADD TABLE orders, order_items;` so the KDS can subscribe later.
+
+6. Migration 4 — `supabase/migrations/20260502120300_payments.sql`
+   Tables (multi-tenant + RLS):
+   - `payments` (id uuid PK, tenant_id, order_id, stripe_payment_intent_id text unique, amount_cents, tip_cents, application_fee_cents, status text check status in ('requires_payment_method','processing','succeeded','failed','canceled'), method text check method in ('card_present','card_not_present','cash'), card_last4 text, card_brand text, created_at)
+   - `refunds` (id uuid PK, payment_id, stripe_refund_id text unique, amount_cents, reason text, refunded_by_staff_id, created_at)
+   - `terminals` (id uuid PK, tenant_id, location_id, stripe_reader_id text unique, label text, last_seen_at, registered_at)
+
+7. Migration 5 — `supabase/migrations/20260502120400_cash_drawer.sql`
+   Tables (multi-tenant + RLS):
+   - `cash_drawer_sessions` (id uuid PK, tenant_id, location_id, opened_by_staff_id, opening_float_cents, closing_actual_cents nullable, expected_cents nullable, variance_cents nullable, opened_at, closed_at nullable)
+   - `cash_events` (id bigserial PK, session_id, type text check type in ('pay_in','pay_out','no_sale','cash_sale','cash_refund'), amount_cents, reason text, staff_id, created_at)
+
+8. Migration 6 — `supabase/migrations/20260502120500_extensions_and_helpers.sql`
+   - `CREATE EXTENSION IF NOT EXISTS "pgcrypto";` (for gen_random_uuid)
+   - `CREATE EXTENSION IF NOT EXISTS "uuid-ossp";` (defensive)
+   - Trigger function `set_updated_at()` that updates `updated_at` column on row update
+   - Apply trigger to `contacts` table (the only one with updated_at in MVP scope)
+
+9. Create `supabase/seed.sql` with:
+   - One demo tenant: id `00000000-0000-0000-0000-000000000001`, name 'Demo Cafe', vertical 'cafe'
+   - One location for that tenant
+   - One owner staff_member (PIN 1234, bcrypt-hashed — use a known test hash, document it as `pin = 1234` in a comment)
+   - Cafe seed: 1 menu_category 'Drinks', 12 menu_items (espresso $3.00, latte $4.50, cappuccino $4.50, americano $3.50, drip $3.00, cold brew $4.00, croissant $3.50, muffin $3.00, bagel $2.50, scone $3.50, sandwich $9.00, salad $11.00). All prices in cents.
+   - 3 modifier_groups: Milk (whole/skim/oat +$0.65/almond +$0.65), Size (S/M +$0.50/L +$1.00), Temp (hot/iced)
+   - Link drinks (espresso through cold brew) to all 3 modifier groups via menu_item_modifier_groups
+
+10. Create `supabase/README.md` documenting:
+    - What this folder is (versioned schema-as-code)
+    - Folder structure (migrations/, seed.sql, config.toml)
+    - How to install Supabase CLI: `brew install supabase/tap/supabase` (macOS) or `npm i -g supabase`
+    - How to link to a project: `cd supabase && supabase link --project-ref <ref>` (note: project not yet created)
+    - How to push migrations: `supabase db push`
+    - How to reset local dev DB: `supabase db reset` (re-runs all migrations + seed)
+    - How to add a new migration: `supabase migration new <name>` → writes to migrations/ → review → push
+    - The decision history: NEW Supabase account, schema is unprefixed (no `pos_` prefix), multi-tenant from day one, separate from Suite Supabase (cross-sync via API webhooks at integration time)
+
+11. Add scripts to root `package.json` (the workspace root, not artifacts/nuatis-pos):
+    - `"db:link": "cd supabase && supabase link --project-ref $SUPABASE_PROJECT_REF"`
+    - `"db:push": "cd supabase && supabase db push"`
+    - `"db:reset": "cd supabase && supabase db reset"`
+    - `"db:diff": "cd supabase && supabase db diff"`
+    - `"db:migrate:new": "cd supabase && supabase migration new"`
+
+12. Commit + push to main with message: `feat(db): supabase migrations 0001-0006 + seed (multi-tenant foundation)`
+
+SCOPE — DO NOT BUILD
+- Do NOT run `supabase init` interactively (just create the files manually)
+- Do NOT run `supabase link` — no project exists yet
+- Do NOT run `supabase db push` — local-only this batch
+- Do NOT install Supabase CLI globally on Replit (pnpm scripts will use `npx supabase` if needed; otherwise document it as "user installs locally")
+- Do NOT modify anything in `artifacts/` (that folder is throwaway prototype, untouched)
+- Do NOT create any TypeScript, Express, or Next.js files — this batch is database-only
+- Do NOT create separate apps/ folders for pos-api, pos-admin — those come in Phase 0 Batch 2
+- Do NOT create migrations for: memberships, gift cards, packages, floor plans, tables, printers, tips ledger — all post-MVP
+- Do NOT add any indexes beyond tenant_id and the two contact lookup ones — premature optimization
+
+TECH CONSTRAINTS
+- Migration filenames use timestamp prefix `20260502HHMMSS_name.sql` (Supabase CLI convention)
+- All ID columns are `uuid` with `default gen_random_uuid()`
+- All timestamps are `timestamptz`
+- All money columns are `int` named `*_cents` — never decimal, never float
+- All RLS policies follow the exact pattern: `USING (tenant_id = (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::uuid)`
+- Foreign keys: `references <table>(id) on delete cascade` for child tables, `on delete set null` for nullable refs (contact_id on orders)
+- No `pos_` prefix on any table — schema is clean since this DB is standalone
+- SQL style: lowercase keywords, snake_case column names, two-space indent
+
+ACCEPTANCE
+Verifiable before reporting done:
+1. Folder structure matches the spec — run `ls -R supabase/`
+2. Six `.sql` files in `supabase/migrations/` with the exact names from the spec
+3. `supabase/seed.sql` exists and has 12 menu items (count semicolons or explicit INSERT count)
+4. `supabase/README.md` exists with all 6 documented sections
+5. Root `package.json` has all 5 db:* scripts
+6. `git log --oneline -1` shows the commit message exactly
+7. `git status` is clean (everything committed and pushed)
+8. No syntax errors — run `cat supabase/migrations/*.sql | grep -c "CREATE TABLE"` returns at least 16 (5+5+2+3+2 tables, no triggers/extensions counted)
+
+HARD STOP
+Stop after scope. Report:
+- Summary of files created (full paths, line counts)
+- Any errors during commit/push
+- Any tasks skipped and why
+- Open questions for next batch (especially: which Supabase project ref to link, do we want any RLS policies that allow service_role to bypass, do we want a separate `service_role_only` policy class)
+
+Wait for next prompt.
