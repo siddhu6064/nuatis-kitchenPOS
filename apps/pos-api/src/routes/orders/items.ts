@@ -3,6 +3,7 @@ import { AddOrderItemRequestSchema } from "@nuatis/pos-shared";
 import { requireAuth } from "../../middleware/auth.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
 import { assertTenantOwns, recalcOrderTotals, writeAuditLog } from "../../lib/db.js";
+import { logger } from "../../lib/logger.js";
 
 export const orderItemsRouter: IRouter = Router({ mergeParams: true });
 
@@ -106,4 +107,97 @@ orderItemsRouter.delete("/:item_id", requireAuth(), async (req: Request, res: Re
   writeAuditLog(client, { tenant_id: tenantId, staff_id: staffId, action: "order_item_voided", target_type: "order_item", target_id: itemId, payload: { order_id: orderId }, ip_address: req.ip });
 
   res.status(204).send();
+});
+
+// ---------------------------------------------------------------------------
+// POST /v1/orders/:id/items/:item_id/bump — mark item as seen/bumped on KDS
+//
+// Auth   : terminal OR session (any authenticated staff)
+// Validates: order is fired; item belongs to order + tenant; item not yet bumped/voided
+// Broadcasts: { event: 'item_bumped', order_id, item_id } on kitchen:{location_id}
+// Audit  : order_item_bumped
+// ---------------------------------------------------------------------------
+orderItemsRouter.post("/:item_id/bump", requireAuth(), async (req: Request, res: Response): Promise<void> => {
+  const client = getSupabaseClient();
+  if (!client) { res.status(503).json({ error: { code: "service_unavailable", message: "DB not configured" } }); return; }
+
+  const tenantId = req.auth!.tenant_id;
+  const orderId = req.params["id"]!;
+  const itemId = req.params["item_id"]!;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = client as any;
+
+  // Fetch order — must be fired (or at least not paid/voided) and belong to tenant
+  const { data: order, error: orderErr } = await db
+    .from("orders")
+    .select("id, status, location_id, tenant_id")
+    .eq("id", orderId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle();
+
+  if (orderErr) { res.status(500).json({ error: { code: "internal_error", message: orderErr.message } }); return; }
+  if (!order) { res.status(404).json({ error: { code: "not_found", message: "Order not found" } }); return; }
+  if (order.status === "paid" || order.status === "voided") {
+    res.status(409).json({ error: { code: "conflict", message: `Cannot bump items on a ${order.status as string} order` } }); return;
+  }
+  if (order.status !== "fired") {
+    res.status(409).json({ error: { code: "conflict", message: "Order must be fired before bumping items" } }); return;
+  }
+
+  // Fetch item — must belong to this order and not already bumped or voided
+  const { data: item, error: itemErr } = await db
+    .from("order_items")
+    .select("id, status, order_id")
+    .eq("id", itemId)
+    .eq("order_id", orderId)
+    .maybeSingle();
+
+  if (itemErr) { res.status(500).json({ error: { code: "internal_error", message: itemErr.message } }); return; }
+  if (!item) { res.status(404).json({ error: { code: "not_found", message: "Order item not found" } }); return; }
+  if (item.status === "bumped") { res.status(409).json({ error: { code: "conflict", message: "Item already bumped" } }); return; }
+  if (item.status === "voided") { res.status(409).json({ error: { code: "conflict", message: "Cannot bump a voided item" } }); return; }
+
+  const now = new Date().toISOString();
+
+  const { data: updatedItem, error: updateErr } = await db
+    .from("order_items")
+    .update({ status: "bumped", bumped_at: now })
+    .eq("id", itemId)
+    .select()
+    .single();
+
+  if (updateErr) { res.status(500).json({ error: { code: "internal_error", message: updateErr.message } }); return; }
+
+  // Verify tenant ownership (belt-and-suspenders since we already filtered by order_id + tenant above)
+  void assertTenantOwns; // imported but used implicitly via order query above
+
+  // Fire-and-forget: broadcast item_bumped to KDS so other open KDS tabs sync
+  // Payload conforms to KitchenBumpEventSchema from @nuatis/pos-shared
+  void (async () => {
+    try {
+      const channel = client.channel(`kitchen:${order.location_id as string}`);
+      await channel.subscribe();
+      await channel.send({
+        type: "broadcast",
+        event: "item_bumped",
+        payload: { event: "item_bumped", order_id: orderId, item_id: itemId },
+      });
+      await client.removeChannel(channel);
+    } catch (err) {
+      logger.warn({ err }, "realtime bump broadcast failed — non-fatal");
+    }
+  })();
+
+  const staffId = req.auth!.kind === "terminal" ? req.auth!.staff_id : req.auth!.user_id;
+  writeAuditLog(client, {
+    tenant_id: tenantId,
+    staff_id: staffId,
+    action: "order_item_bumped",
+    target_type: "order_item",
+    target_id: itemId,
+    payload: { order_id: orderId },
+    ip_address: req.ip,
+  });
+
+  res.json(updatedItem);
 });

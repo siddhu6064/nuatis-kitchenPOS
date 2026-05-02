@@ -34,6 +34,13 @@ export function sendToKitchen(
   return post(`/v1/orders/${order_id}/send-to-kitchen`, {});
 }
 
+export function bumpOrderItem(
+  order_id: string,
+  item_id: string
+): Promise<OrderItemResponse> {
+  return post(`/v1/orders/${order_id}/items/${item_id}/bump`, {});
+}
+
 export function createPayment(
   order_id: string,
   method: string,

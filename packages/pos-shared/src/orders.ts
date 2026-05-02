@@ -42,6 +42,7 @@ export const OrderSchema = z.object({
   opened_by_staff_id: uuid,
   status: OrderStatusSchema,
   vertical: z.string(),
+  order_number: z.number().int().nullable(),
   subtotal_cents: nonNegInt,
   tax_cents: nonNegInt,
   tip_cents: nonNegInt,
@@ -67,6 +68,7 @@ export const OrderItemSchema = z.object({
   modifiers_json: z.unknown().nullable(),
   status: OrderItemStatusSchema,
   fired_at: nullableDate,
+  bumped_at: nullableDate,
   voided_at: nullableDate,
   created_at: isoDate,
 });
@@ -129,3 +131,46 @@ export const VoidOrderRequestSchema = z.object({
   reason: z.string().min(1).max(500),
 });
 export type VoidOrderRequest = z.infer<typeof VoidOrderRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// KDS (Kitchen Display System) — Realtime broadcast event schemas
+// These are the canonical definitions; the prototype copies them to types.ts.
+// Sync banner: updated 2026-05-02 batch 9
+// ---------------------------------------------------------------------------
+
+/**
+ * Broadcast payload emitted on channel `kitchen:{location_id}` when an order
+ * transitions to `fired` status via POST /v1/orders/:id/send-to-kitchen.
+ */
+export const KitchenBroadcastEventSchema = z.object({
+  event: z.literal("order_fired"),
+  order_id: uuid,
+  location_id: uuid,
+  order_number: z.number().int(),
+  opened_at: isoDate,
+  items: z.array(
+    z.object({
+      id: uuid,
+      name: z.string(),
+      quantity: z.number().int().positive(),
+      modifiers: z.array(
+        z.object({
+          group_name: z.string(),
+          option_name: z.string(),
+        })
+      ),
+    })
+  ),
+});
+export type KitchenBroadcastEvent = z.infer<typeof KitchenBroadcastEventSchema>;
+
+/**
+ * Broadcast payload emitted on channel `kitchen:{location_id}` when a KDS
+ * operator bumps (dismisses) a line item via POST /v1/orders/:id/items/:item_id/bump.
+ */
+export const KitchenBumpEventSchema = z.object({
+  event: z.literal("item_bumped"),
+  order_id: uuid,
+  item_id: uuid,
+});
+export type KitchenBumpEvent = z.infer<typeof KitchenBumpEventSchema>;

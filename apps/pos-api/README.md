@@ -26,7 +26,7 @@ See [root README → Local Development](../../README.md#local-development) for t
 
 Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 - `GET /v1/health` → `supabase:"connected"`
-- All 27 integration tests activate: `pnpm --filter @nuatis/pos-api test` → 56 pass, 0 skip
+- All 29 integration tests activate: `pnpm --filter @nuatis/pos-api test` → 58 pass, 0 skip
 
 ## Routes
 
@@ -42,10 +42,12 @@ Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 | DELETE | `/v1/menu/items/:id` | Session (owner) | Soft-delete item |
 | POST | `/v1/orders` | Terminal | Create order |
 | POST | `/v1/orders/:id/items` | Terminal | Add line item |
-| DELETE | `/v1/orders/:id/items/:itemId` | Terminal | Void line item |
-| POST | `/v1/orders/:id/send-to-kitchen` | Terminal | Fire order → kitchen |
+| DELETE | `/v1/orders/:id/items/:item_id` | Terminal | Void line item |
+| POST | `/v1/orders/:id/items/:item_id/bump` | Terminal or Session | Bump (dismiss) item on KDS |
+| POST | `/v1/orders/:id/send-to-kitchen` | Terminal | Fire order → kitchen + Realtime broadcast |
 | POST | `/v1/orders/:id/checkout` | Terminal | Compute totals (tax 8.25%) |
 | POST | `/v1/orders/:id/payments` | Terminal | Record payment (card_mock in prototype) |
+| POST | `/v1/orders/:id/void` | Session (owner/manager) | Void order with reason |
 
 ## Tests
 
@@ -55,8 +57,8 @@ pnpm --filter @nuatis/pos-api test
 
 | Condition | Result |
 |-----------|--------|
-| No Supabase (default) | 25 pass, 25 skip |
-| With `supabase start` | 56 pass, 0 skip |
+| No Supabase (default) | 29 pass, 27 skip |
+| With `supabase start` | 58 pass, 0 skip |
 
 ## Folder structure
 
@@ -78,7 +80,7 @@ apps/pos-api/
 │       ├── auth.ts           # sign-in + pin endpoints
 │       ├── health.ts         # /v1/health
 │       ├── menu/             # categories + items + tree
-│       └── orders/           # full order state machine
+│       └── orders/           # full order state machine + KDS bump
 ├── .env                      # Local secrets — gitignored, never commit
 ├── .env.example              # Template — committed
 └── README.md

@@ -6,6 +6,7 @@ import {
   addOrderItem,
   voidOrderItem,
   createPayment,
+  sendToKitchen as sendToKitchenApi,
 } from "@/lib/api/orders";
 import type { PaymentApiResponse } from "@/lib/api/types";
 
@@ -174,6 +175,21 @@ export function useOrder() {
     setApiLines([]);
   }, []);
 
+  /**
+   * Fire the current order to the kitchen via POST /v1/orders/:id/send-to-kitchen.
+   * Called before payment so the kitchen sees the order even if the customer abandons.
+   * Non-fatal — logs error but does not block the payment flow.
+   */
+  const sendToKitchen = useCallback(async (): Promise<void> => {
+    if (!orderId) return;
+    try {
+      await sendToKitchenApi(orderId);
+    } catch (err) {
+      // Non-fatal: kitchen won't see this order but payment can still proceed
+      console.error("sendToKitchen failed (non-fatal):", err);
+    }
+  }, [orderId]);
+
   const pay = useCallback(
     async (method: string, tipCents: number): Promise<PaymentApiResponse> => {
       if (!orderId) throw new Error("No active order");
@@ -196,6 +212,7 @@ export function useOrder() {
     decrementItem,
     removeItem,
     clearCart,
+    sendToKitchen,
     pay,
   };
 }

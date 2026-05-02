@@ -31,6 +31,7 @@ export function POS() {
     clearCart,
     totals,
     itemCount,
+    sendToKitchen,
     pay,
   } = useOrder();
 
@@ -52,7 +53,14 @@ export function POS() {
   // Handlers
   const handleCharge = () => setStep("tip-select");
   const handleBackToCart = () => setStep("cart");
-  const handleGoToPay = () => setStep("tap-to-pay");
+
+  // Fire to kitchen (non-fatal, fire-and-forget) before entering the payment flow
+  // so the kitchen sees the order even if the customer abandons at the card reader.
+  const handleGoToPay = () => {
+    void sendToKitchen();
+    setStep("tap-to-pay");
+  };
+
   const handleCancelPay = () => setStep("tip-select");
 
   const handleApproved = useCallback(() => {

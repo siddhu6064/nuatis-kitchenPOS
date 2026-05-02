@@ -83,6 +83,24 @@ describe.skipIf(!hasSupabase)("Orders state machine — integration", () => {
     expect(res.body.status).toBe("fired");
   });
 
+  it("POST /v1/orders/:id/items/:item_id/bump → 200 + status bumped", async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/v1/orders/${orderId}/items/${espressoItemId}/bump`)
+      .set("Authorization", `Bearer ${terminalToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("bumped");
+    expect(res.body.bumped_at).toBeTruthy();
+  });
+
+  it("POST /v1/orders/:id/items/:item_id/bump — already bumped → 409", async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/v1/orders/${orderId}/items/${espressoItemId}/bump`)
+      .set("Authorization", `Bearer ${terminalToken}`);
+    expect(res.status).toBe(409);
+  });
+
   it("POST /v1/orders/:id/checkout → correct tax calculation", async () => {
     const app = buildApp();
     const res = await request(app).post(`/v1/orders/${orderId}/checkout`).set("Authorization", `Bearer ${terminalToken}`).send({});
@@ -144,5 +162,28 @@ describe("Orders auth guards — unit (no Supabase)", () => {
     const app = buildApp();
     const res = await request(app).post("/v1/orders").send({ location_id: DEMO_LOCATION });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("Bump endpoint auth guards — unit (no Supabase)", () => {
+  it("POST /v1/orders/:id/items/:item_id/bump without auth → 401", async () => {
+    const app = buildApp();
+    const res = await request(app).post(
+      "/v1/orders/00000000-0000-0000-0000-000000000001/items/00000000-0000-0000-0000-000000000002/bump"
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("POST /v1/orders/:id/items/:item_id/bump with valid JWT but no DB → 503", async () => {
+    const app = buildApp();
+    const { token } = await signTerminalJwt({
+      tenant_id: DEMO_TENANT,
+      location_id: DEMO_LOCATION,
+      staff_id: DEMO_STAFF,
+    });
+    const res = await request(app)
+      .post(`/v1/orders/${DEMO_TENANT}/items/${DEMO_LOCATION}/bump`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(503);
   });
 });

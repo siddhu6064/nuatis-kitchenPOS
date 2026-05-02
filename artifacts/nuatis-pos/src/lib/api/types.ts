@@ -1,6 +1,9 @@
-// Copied from @nuatis/pos-shared on 2026-05-02 — keep in sync manually until
-// prototype is replaced by production admin app. DO NOT add new schemas here;
-// add them upstream and copy.
+// Copied from @nuatis/pos-shared — keep in sync manually until prototype is
+// replaced by production admin app. DO NOT add new schemas here; add them
+// upstream in pos-shared and copy.
+// Sync banner: updated 2026-05-02 batch 9
+
+import { z } from "zod";
 
 export interface ApiModifierOption {
   id: string;
@@ -68,3 +71,40 @@ export interface PaymentApiResponse {
     total_cents: number;
   };
 }
+
+// ---------------------------------------------------------------------------
+// KDS Realtime event schemas — copied from @nuatis/pos-shared
+// Used at runtime in realtime.ts to validate incoming broadcast payloads.
+// ---------------------------------------------------------------------------
+
+const _uuid = z.string().uuid();
+const _isoDate = z.string().datetime();
+
+export const KitchenBroadcastEventSchema = z.object({
+  event: z.literal("order_fired"),
+  order_id: _uuid,
+  location_id: _uuid,
+  order_number: z.number().int(),
+  opened_at: _isoDate,
+  items: z.array(
+    z.object({
+      id: _uuid,
+      name: z.string(),
+      quantity: z.number().int().positive(),
+      modifiers: z.array(
+        z.object({
+          group_name: z.string(),
+          option_name: z.string(),
+        })
+      ),
+    })
+  ),
+});
+export type KitchenBroadcastEvent = z.infer<typeof KitchenBroadcastEventSchema>;
+
+export const KitchenBumpEventSchema = z.object({
+  event: z.literal("item_bumped"),
+  order_id: _uuid,
+  item_id: _uuid,
+});
+export type KitchenBumpEvent = z.infer<typeof KitchenBumpEventSchema>;

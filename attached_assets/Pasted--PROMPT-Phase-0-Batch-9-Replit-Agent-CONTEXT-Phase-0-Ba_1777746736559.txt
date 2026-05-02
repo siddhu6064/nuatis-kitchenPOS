@@ -1,0 +1,188 @@
+▶ PROMPT [Phase 0 · Batch 9 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-8 complete: 9 migrations, full API surface (/v1/health, /v1/auth, /v1/menu, /v1/orders), prototype wired as integration testbed. Batch 6 added a Realtime broadcast on `kitchen:{location_id}` channel when orders fire. This batch builds the Kitchen Display System (KDS) — a fullscreen React route at `/kds` in the prototype that subscribes to that broadcast and renders live ticket cards with a Bump action. NO smoke test against running Supabase (deferred until Docker available); code-complete + unit tests only.
+
+GOAL
+Working KDS UI: visit /kds in the prototype with a session JWT, see fullscreen black canvas with ticket cards arriving in real-time when /v1/orders/:id/send-to-kitchen fires elsewhere. Cards show order number, opened-at relative time, item lines with modifiers in sub-text. Color border by age (0-5m green, 5-10m yellow, 10m+ red pulse). Tap line strikes through and calls bump endpoint. Card disappears when all items bumped.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schema additions
+═══════════════════════════════════════
+
+1. Add to packages/pos-shared/src/orders.ts:
+   - KitchenBroadcastEventSchema = z.object({ event: z.literal('order_fired'), order_id: z.string().uuid(), location_id: z.string().uuid(), order_number: z.number().int(), opened_at: z.string().datetime(), items: z.array(z.object({ id: z.string().uuid(), name: z.string(), quantity: z.number().int().positive(), modifiers: z.array(z.object({ group_name: z.string(), option_name: z.string() })) })) })
+   - KitchenBumpEventSchema = z.object({ event: z.literal('item_bumped'), order_id: z.string().uuid(), item_id: z.string().uuid() })
+   - Export inferred types
+   - Re-export from src/index.ts
+
+2. Verify Batch 6 send-to-kitchen broadcast payload matches KitchenBroadcastEventSchema. If not, update kitchen.ts in pos-api to emit the schema-conformant payload (the schema is the contract; the route conforms).
+
+═══════════════════════════════════════
+SECTION 2 — pos-api: bump endpoint + broadcast
+═══════════════════════════════════════
+
+3. Add POST /v1/orders/:id/items/:item_id/bump to apps/pos-api/src/routes/orders/items.ts:
+   - any auth (session OR terminal)
+   - validates order is fired (not paid/voided)
+   - validates item belongs to order belongs to tenant
+   - sets order_items.status = 'bumped' (NOTE: migration 0009 changed status enum from 'bumped' to 'voided' — verify what the current enum is and either add 'bumped' back via migration 0010 OR use a separate `bumped_at` timestamp pattern)
+   - Recommended: ADD migration 0010 — alter order_items status check to include 'bumped', set bumped_at column
+   - broadcast { event: 'item_bumped', order_id, item_id } on kitchen:{location_id} channel (fire-and-forget)
+   - audit log: action 'order_item_bumped'
+   - returns 200 + updated order_item
+
+4. Migration 0010 — supabase/migrations/20260502140000_kds_bumped_status.sql:
+   - alter type order_item_status add value 'bumped' (if enum) OR alter table order_items drop constraint, add constraint with bumped (if check)
+   - alter table order_items add column bumped_at timestamptz
+   - Inspect existing migrations FIRST — only add the actual delta
+
+═══════════════════════════════════════
+SECTION 3 — Prototype API client additions
+═══════════════════════════════════════
+
+5. Add to artifacts/nuatis-pos/src/lib/api/orders.ts:
+   - bumpOrderItem(order_id, item_id) → POST /v1/orders/:id/items/:item_id/bump
+
+6. Create artifacts/nuatis-pos/src/lib/api/realtime.ts:
+   - Initializes a Supabase client (anon key, since Realtime broadcasts are public-channel by default — auth-gating broadcasts is an advanced Supabase pattern; for now any authenticated client can subscribe)
+   - VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY env vars (added to .env.example, not .env)
+   - Export subscribeToKitchen(location_id, onOrderFired, onItemBumped) → returns cleanup function
+   - The Supabase JS client handles channel re-subscribe on disconnect; document this in code comments
+   - Validates incoming events with KitchenBroadcastEventSchema / KitchenBumpEventSchema; logs and ignores malformed events
+
+7. Add to artifacts/nuatis-pos/src/lib/api/types.ts:
+   - Copy KitchenBroadcastEvent + KitchenBumpEvent Zod schemas + types
+   - Update sync banner: "Copied 2026-05-02 batch 9"
+
+═══════════════════════════════════════
+SECTION 4 — KDS UI components
+═══════════════════════════════════════
+
+8. Create artifacts/nuatis-pos/src/components/kds/KdsScreen.tsx:
+   - Fullscreen layout — black background, no app chrome (no header, no nav)
+   - Grid of ticket cards (CSS grid, auto-fill min 280px, gap 16px)
+   - Empty state: "Waiting for orders…" centered, JetBrains Mono, ink-3 color
+   - Reads location_id from sessionStorage (set on sign-in)
+   - useState<Ticket[]> for active tickets; on order_fired event, prepend new ticket; on item_bumped event, mark item bumped or remove ticket if all items bumped
+
+9. Create artifacts/nuatis-pos/src/components/kds/TicketCard.tsx:
+   - Header: "#42" (order_number, large Lora serif) + relative time ("2m ago")
+   - Item lines: qty × name, modifiers in sub-text below in JetBrains Mono small
+   - Border color logic — useState<'green'|'yellow'|'red'> updated by setInterval every 30s based on minutes-since-opened
+   - Pulsing animation on red border (CSS keyframes)
+   - Tap line → calls bumpOrderItem; line gets strike-through + opacity 0.4
+   - When all items bumped, card slides out (200ms transition) and is removed
+
+10. Create artifacts/nuatis-pos/src/components/kds/RecallBumpedButton.tsx:
+    - Top-right corner, "Recall Last Bumped" — restores last bumped item (in-memory undo, single-item history)
+    - For now: client-side only; if cashier closes /kds tab, the bump is permanent (no server-side un-bump endpoint this batch)
+
+11. Add /kds route handling in artifacts/nuatis-pos/src/App.tsx:
+    - Check window.location.pathname === '/kds' on app load
+    - If yes: render KdsScreen instead of Login/POS
+    - If user not authenticated, redirect to /
+    - This is a hash-free route — Vite serves index.html for all paths via the existing config
+
+12. Disable screen sleep on /kds route — Wake Lock API:
+    - In KdsScreen useEffect: navigator.wakeLock.request('screen').catch(() => null) — graceful failure on Safari iOS (which ignores it; document in comment)
+    - Release on cleanup
+
+13. Audio chime on new ticket arrival:
+    - Static audio file at artifacts/nuatis-pos/public/chime.mp3 (Agent: pick a short royalty-free notification sound or generate via Web Audio API as a 200ms tone)
+    - Play on every order_fired event
+    - Settings toggle in localStorage 'kds.muted' — gear icon top-right turns it off/on; defaults to on
+
+═══════════════════════════════════════
+SECTION 5 — Tests
+═══════════════════════════════════════
+
+14. Add to apps/pos-api/src/routes/orders/orders.test.ts:
+    - Skip-graceful integration test: bump endpoint
+    - Unit test: bump endpoint validates order is fired (not paid/voided)
+    - Unit test: bump endpoint validates item belongs to tenant
+
+15. Add unit tests for KitchenBroadcastEventSchema parsing in packages/pos-shared/src/orders.test.ts (or co-located):
+    - Valid event parses cleanly
+    - Missing field rejects
+    - Wrong UUID format rejects
+
+═══════════════════════════════════════
+SECTION 6 — Documentation
+═══════════════════════════════════════
+
+16. Update artifacts/nuatis-pos/README.md:
+    - Add "KDS Mode" section: visit /kds with a signed-in session; subscribes to kitchen:{location_id} Realtime
+    - Note: KDS uses Supabase anon key (in env) — broadcast channels are public-by-default; auth-gating broadcasts is a future hardening step
+
+17. Update apps/pos-api/README.md routes table:
+    - Add POST /v1/orders/:id/items/:item_id/bump under orders section
+
+18. Add to artifacts/nuatis-pos/.env.example:
+    - VITE_SUPABASE_URL=http://localhost:54321
+    - VITE_SUPABASE_ANON_KEY= (note: from supabase start output)
+
+═══════════════════════════════════════
+SECTION 7 — Smoke + commit
+═══════════════════════════════════════
+
+19. From root: pnpm install (no new deps needed — @supabase/supabase-js already in pos-api; add to artifacts/nuatis-pos as a runtime dep), pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (still 25 pass + skipped baseline preserved; new bump unit tests should pass).
+
+20. Commit + push:
+    - git add .
+    - git commit -m "feat(kds): /kds Realtime screen + bump endpoint + migration 0010"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT install Supabase locally / run supabase start (deferred)
+- Do NOT add server-side broadcast auth gating (anon channel access is fine for MVP)
+- Do NOT add a separate apps/pos-kds Next.js app — /kds in the prototype is faster
+- Do NOT add multi-station routing (kitchen vs bar vs pizza station) — single station for cafe MVP
+- Do NOT add KDS-side undo for items bumped longer than 30s ago
+- Do NOT add ticket grouping by course (appetizers / mains / desserts) — flat list this batch
+- Do NOT add audio for bump events (chime only on new tickets)
+- Do NOT add a "send to kitchen" button to POS UI — the existing prototype goes straight from cart to checkout; sending to KDS auto-happens via /v1/orders/:id/send-to-kitchen which the prototype could call but doesn't currently. Wire that into the prototype's checkout flow as a small addition: before Tap-to-Pay, call sendToKitchen first.
+- Do NOT touch supabase/ folder beyond migration 0010
+- Do NOT add Stripe Terminal integration
+
+TECH CONSTRAINTS
+- Realtime client is a singleton — instantiate once per page load, share across components
+- Subscription cleanup on component unmount (return from useEffect)
+- Wake Lock graceful failure on iOS Safari (just log, don't break)
+- Border color logic uses minutes since opened_at (computed client-side; clock skew tolerable)
+- Tap targets ≥ 60px (KDS is fingertip-driven on a wall-mounted iPad)
+- All state in React Query / useState; no external store this batch
+- bumpOrderItem call uses optimistic UI — strike line immediately, rollback if API fails
+- Wire prototype's checkout flow: sendToKitchen() called before pay() so the kitchen sees orders even if customer abandons
+- Const router exports use IRouter annotation (TS2742 composite-mode rule)
+
+ACCEPTANCE
+1. packages/pos-shared/dist/orders.d.ts has KitchenBroadcastEvent + KitchenBumpEvent types
+2. apps/pos-api/src/routes/orders/items.ts has bump endpoint with auth + role + validation
+3. Migration 0010 file exists; migrations 0001-0009 untouched
+4. artifacts/nuatis-pos/src/lib/api/realtime.ts exists with subscribeToKitchen
+5. KdsScreen + TicketCard + RecallBumpedButton components exist in src/components/kds/
+6. /kds route works: navigating to localhost:5173/kds shows KdsScreen if authenticated, redirects to / if not
+7. Wake Lock API attempted (with graceful failure)
+8. Audio chime file exists; mute toggle stored in localStorage
+9. Prototype checkout flow wired to call sendToKitchen before pay
+10. pnpm api:typecheck → 0 errors
+11. pnpm api:test → 25+ pass + skipped baseline (no new failures)
+12. Tests for bump endpoint (skip-graceful integration + unit) added
+13. README updates for both prototype and pos-api
+14. git status clean post-commit
+15. git log --oneline -1 matches spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Files created (full paths, count)
+- Migration 0010 delta (exactly what columns/types added)
+- Test counts (any new fails? skip count change?)
+- TS workarounds used (especially Supabase JS Realtime types — they're known weird)
+- Confirm migrations 0001-0009 untouched
+- Confirm pos-api route changes limited to bump endpoint + kitchen.ts payload conformance fix (if needed)
+- Open questions for Batch 10 (Stripe Terminal Web SDK integration replacing card_mock; OR pos-admin Next.js scaffold for menu management; OR receipt email/SMS via BullMQ workers — recommended order)
+
+Wait for next prompt.
