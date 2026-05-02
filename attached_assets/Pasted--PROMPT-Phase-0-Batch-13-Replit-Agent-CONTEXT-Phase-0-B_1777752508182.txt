@@ -1,0 +1,300 @@
+▶ PROMPT [Phase 0 · Batch 13 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-12 complete: full back-of-house API (auth, menu, orders, KDS, cash, receipts, reports + cron). Now we need the admin/back-office UI. This batch scaffolds apps/pos-admin (Next.js 14 App Router) with Auth.js v5 owner/manager sign-in, dashboard shell with sidebar navigation, and ONE working feature screen: menu management (CRUD via /v1/menu/*). Subsequent batches fill out remaining screens (orders/cash, reports, staff, receipts).
+
+GOAL
+Working admin app on port 3001: owner signs up + signs in via email/password, lands on dashboard shell, navigates to Menu page, can create/edit/delete categories + items + modifier groups against the live API. All other dashboard nav links present but lead to "Coming soon" placeholder pages. No order/report/staff/receipt screens this batch.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — apps/pos-admin scaffold
+═══════════════════════════════════════
+
+1. Create folder apps/pos-admin/ at repo root (sibling to apps/pos-api, packages/, supabase/, artifacts/).
+
+2. apps/pos-admin/package.json:
+   - name: "@nuatis/pos-admin", private: true, type: "module", version: "0.1.0"
+   - scripts: dev (next dev -p 3001), build (next build), start (next start -p 3001), typecheck (tsc --noEmit), lint (next lint)
+   - dependencies: next@^14.2, react@^18.3, react-dom@^18.3, next-auth@^5.0.0-beta.25 (Auth.js v5 beta — this is what Suite uses), @auth/core (peer of next-auth), zod@^3.23, @nuatis/pos-shared (workspace:*), @tanstack/react-query@^5.59, @tanstack/react-query-devtools (dev), tailwindcss@^3.4, @radix-ui/react-dialog, @radix-ui/react-dropdown-menu, @radix-ui/react-select, @radix-ui/react-toast, @radix-ui/react-slot, @radix-ui/react-label, lucide-react, class-variance-authority, clsx, tailwind-merge, jose@^5.9 (for JWT verification on server actions), bcrypt@^5.1
+   - devDependencies: typescript@^5.6, @types/react, @types/react-dom, @types/node, @types/bcrypt, autoprefixer, postcss, eslint, eslint-config-next
+
+3. apps/pos-admin/tsconfig.json:
+   - extends Next.js base; target ES2022; module ESNext; moduleResolution Bundler (Next.js convention, NOT NodeNext); strict true; jsx preserve; paths { "@/*": ["./src/*"] }; incremental true; references to @nuatis/pos-shared
+
+4. apps/pos-admin/next.config.mjs:
+   - output: undefined (default — for Vercel)
+   - transpilePackages: ['@nuatis/pos-shared'] (so workspace package compiles correctly)
+   - reactStrictMode: true
+
+5. apps/pos-admin/.env.example:
+   - PORT=3001
+   - NEXTAUTH_URL=http://localhost:3001
+   - NEXTAUTH_SECRET= (note: openssl rand -base64 32)
+   - POS_API_URL=http://localhost:3002 (the pos-api endpoint)
+   - SUPABASE_URL= (note: needed for Auth.js Supabase adapter)
+   - SUPABASE_SERVICE_ROLE_KEY= (note: needed for Auth.js + server actions)
+   - POS_JWT_SECRET= (note: must match pos-api; admin issues JWTs that pos-api will verify)
+
+6. apps/pos-admin/.gitignore:
+   - .next/, node_modules/, .env, *.log
+
+7. Tailwind setup:
+   - apps/pos-admin/tailwind.config.ts with content scanning src/**/*.{ts,tsx}
+   - apps/pos-admin/postcss.config.mjs
+   - apps/pos-admin/src/app/globals.css with Tailwind directives + the brand tokens from Suite (Lora serif font-family, Inter sans, JetBrains Mono mono, brand color #0047FF as a CSS var)
+   - Match the prototype's visual style: paper-toned background, Lora for headings, Inter for body, brand-blue CTAs
+
+═══════════════════════════════════════
+SECTION 2 — Auth.js v5 setup
+═══════════════════════════════════════
+
+8. apps/pos-admin/src/auth.ts (or src/lib/auth.ts depending on convention):
+   - Auth.js v5 config with Credentials provider
+   - authorize() function:
+     * Calls POST {POS_API_URL}/v1/auth/sign-in with { email, password }
+     * If 200 with token: returns user object { id: response.user.id, email, name: response.user.email, tenant_id: response.user.tenant_id, role: response.user.role, posJwt: response.token }
+     * If 401: returns null (Auth.js shows error)
+   - JWT callback: copies tenant_id, role, posJwt onto the JWT
+   - Session callback: copies them onto session.user
+   - secret: NEXTAUTH_SECRET
+   - pages: { signIn: '/sign-in' }
+   - Export NextAuth handlers, signIn, signOut
+
+9. apps/pos-admin/src/middleware.ts:
+   - Auth.js middleware exported via auth() wrapper
+   - Protect all routes EXCEPT /sign-in, /sign-up, /api/auth/* (NextAuth's own routes)
+   - Unauthenticated → redirect to /sign-in?callbackUrl=...
+
+10. apps/pos-admin/src/app/api/auth/[...nextauth]/route.ts:
+    - Standard Auth.js v5 route handler
+
+11. apps/pos-admin/src/types/next-auth.d.ts:
+    - Module augmentation: extend Session.user with tenant_id, role, posJwt
+    - Extend JWT with same
+
+═══════════════════════════════════════
+SECTION 3 — Sign-up & sign-in pages
+═══════════════════════════════════════
+
+12. apps/pos-admin/src/app/sign-in/page.tsx:
+    - Centered card, paper background, Lora h1 "Welcome back", Inter body
+    - Email + password fields (Radix Label + native input with Tailwind)
+    - "Sign in" button (brand-blue, full-width)
+    - "Don't have an account? Sign up →" link
+    - On submit: signIn('credentials', { email, password, redirect: true, callbackUrl: '/' })
+    - Error state: "Invalid email or password" if signIn returns error
+
+13. apps/pos-admin/src/app/sign-up/page.tsx:
+    - Same visual style as sign-in
+    - Fields: business name, vertical (radio: cafe | restaurant — only the two MVP verticals), full name, email, password (≥8 chars), confirm password, terms checkbox
+    - On submit: POST {POS_API_URL}/v1/onboarding/sign-up (NEW endpoint — see section 4)
+    - On success: auto sign-in via signIn('credentials', { email, password, redirect: true, callbackUrl: '/' })
+    - On error: show inline message
+
+═══════════════════════════════════════
+SECTION 4 — pos-api: sign-up endpoint
+═══════════════════════════════════════
+
+14. apps/pos-api/src/routes/onboarding/sign-up.ts:
+    - POST /v1/onboarding/sign-up — NO auth required (public)
+    - Body schema (add to packages/pos-shared/src/auth.ts as SignUpRequestSchema):
+      * business_name: string min 1 max 100
+      * vertical: enum ['cafe', 'restaurant'] (MVP launch verticals only — locked decision)
+      * full_name: string min 1 max 100
+      * email: lowercase email
+      * password: string min 8
+      * timezone: string optional (default 'America/Chicago')
+      * terms_accepted: literal true
+    - Server-side flow (single transaction where possible):
+      1. Check no existing tenant has owner staff_member with this email — if conflict, 409 with code 'email_taken'
+      2. INSERT tenants row with (id, name=business_name, vertical, timezone)
+      3. INSERT locations row (auto-default location, name=business_name, sales_tax_bps=825, business_hours=null)
+      4. bcrypt-hash password (cost 12)
+      5. INSERT staff_members row with (tenant_id, location_ids=[location.id], full_name, email, role='owner', password_hash, pin_hash=null)
+      6. Audit log entry: action='tenant_created', target_type='tenant', target_id=tenant.id, payload={vertical, business_name}
+      7. Return 201 with { tenant_id, location_id, owner_staff_id, message: "Account created. Check your email to confirm." } — but DON'T actually send email this batch (deferred)
+    - Validate via SignUpRequestSchema
+    - Mount router at /v1/onboarding/sign-up in pos-api/src/index.ts
+    - Add tests: valid sign-up creates all 3 rows, duplicate email returns 409, invalid vertical returns 400
+
+15. Add SignUpRequestSchema and SignUpResponseSchema to packages/pos-shared/src/auth.ts; rebuild pos-shared.
+
+═══════════════════════════════════════
+SECTION 5 — Dashboard shell
+═══════════════════════════════════════
+
+16. apps/pos-admin/src/app/layout.tsx:
+    - Root layout with html, body, fonts loaded via next/font (Lora serif, Inter sans, JetBrains Mono)
+    - QueryClientProvider wrapper, Auth SessionProvider wrapper
+    - Toaster from Radix + sonner for notifications
+    - children renders the dashboard layout if authenticated
+
+17. apps/pos-admin/src/components/dashboard-shell.tsx:
+    - Sidebar (left, fixed, 240px wide) with sections:
+      * "Nuatis POS" wordmark in Lora at top
+      * Tenant name + vertical badge below wordmark
+      * Nav items (lucide-react icons + label):
+        - Dashboard (home) — /
+        - Menu — /menu
+        - Orders — /orders (placeholder this batch)
+        - Cash Drawer — /cash (placeholder)
+        - Reports — /reports (placeholder)
+        - Staff — /staff (placeholder)
+        - Receipts — /receipts (placeholder)
+        - Settings — /settings (placeholder)
+      * Sign out button at bottom (calls signOut)
+    - Main content area: header bar (location switcher placeholder + user avatar dropdown) + children
+    - Server component that fetches session via auth()
+
+18. apps/pos-admin/src/app/page.tsx (Dashboard home):
+    - Server component
+    - Welcome message: "Welcome back, {user.name}"
+    - Four summary cards (placeholder data this batch — TODO labels):
+      * Today's Sales: "—"
+      * Open Orders: "—"
+      * Cash Drawer: "—"
+      * Tickets Sent to Kitchen: "—"
+    - Each card has a "View →" link to the relevant section
+    - Banner: "Welcome to your dashboard. Menu management is live; other sections coming online in subsequent batches."
+
+19. Placeholder pages for /orders, /cash, /reports, /staff, /receipts, /settings:
+    - Each is a server component
+    - Renders a "Coming soon" message inside the dashboard shell
+    - Wireframe-style: heading, "This screen will [description]", icon, no functional UI
+
+═══════════════════════════════════════
+SECTION 6 — Menu management screen
+═══════════════════════════════════════
+
+20. apps/pos-admin/src/lib/api-client.ts:
+    - Server-side fetch wrapper that calls POS_API_URL with Authorization: Bearer {session.user.posJwt}
+    - apiGet<T>(path, session), apiPost<T,Body>(path, body, session), apiPatch, apiDelete
+    - Throws on non-2xx with parsed error body
+
+21. apps/pos-admin/src/app/menu/page.tsx:
+    - Server component
+    - Calls apiGet('/v1/menu/tree', session) at request time
+    - Renders client component <MenuManager initialTree={tree} />
+
+22. apps/pos-admin/src/components/menu/MenuManager.tsx:
+    - Client component using React Query for mutations
+    - Two-column layout: left = categories list, right = items grid for selected category
+    - Categories list:
+      * Each item: name + item count + edit pencil + delete trash
+      * "+ Add category" button at bottom
+      * Click row to select; selected row highlighted
+    - Items grid:
+      * Cards 4-column grid
+      * Each card: name, price (tabular-nums), modifier badge count, edit + delete
+      * "+ Add item" card at end
+    - Modifier groups managed in a side drawer (separate component, see step 23)
+
+23. apps/pos-admin/src/components/menu/CategoryDialog.tsx:
+    - Radix Dialog
+    - Form: name, sort_order
+    - Mode: create or edit
+    - Calls POST /v1/menu/categories or PATCH /v1/menu/categories/:id
+    - On success: close dialog, refetch tree, toast "Category saved"
+
+24. apps/pos-admin/src/components/menu/ItemDialog.tsx:
+    - Form: name, price (dollars input → cents), category dropdown, taxable checkbox, kitchen_station optional, modifier_group multiselect
+    - Calls POST or PATCH on /v1/menu/items
+    - Modifier group multiselect uses Radix Checkbox components
+    - On save: invalidate menu tree query, toast
+
+25. apps/pos-admin/src/components/menu/ModifierGroupsDrawer.tsx:
+    - Slide-in drawer from right (Radix Dialog with custom positioning)
+    - List of modifier groups + their options
+    - "+ Add modifier group" button
+    - Each group editable: name, min_select, max_select, required, list of options
+    - Each option editable: name, price_delta (cents), sort_order
+    - Hard delete on options, soft delete on groups (already in API)
+
+26. Empty state when no menu items: "Generate starter menu" card pointing at /v1/menu/seed (we'll add this endpoint as a TODO comment for now — actual seed endpoint is documented in P2 but not yet built)
+    - For now, show: "Your menu is empty. Click '+ Add category' to get started."
+
+═══════════════════════════════════════
+SECTION 7 — Documentation + commit
+═══════════════════════════════════════
+
+27. apps/pos-admin/README.md:
+    - What this is (Nuatis POS admin/back-office, Next.js 14, port 3001)
+    - Quick start: cp .env.example .env, fill in, pnpm dev
+    - Routes overview: /sign-in, /sign-up, /, /menu (functional); /orders, /cash, /reports, /staff, /receipts, /settings (placeholder)
+    - Auth.js v5 setup notes
+    - How sign-up creates a tenant + location + owner
+
+28. Update root README.md local-dev section:
+    - Add: pnpm -F @nuatis/pos-admin dev (port 3001)
+    - Add: visit http://localhost:3001 → sign up to create tenant → land on dashboard
+
+29. Update apps/pos-api/README.md routes table:
+    - POST /v1/onboarding/sign-up (no auth) — under "Onboarding" section
+
+30. From root: pnpm install, pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck + test, pnpm -F @nuatis/pos-admin typecheck.
+
+31. Commit + push:
+    - git add .
+    - git commit -m "feat(admin): pos-admin Next.js scaffold + Auth.js v5 + sign-up + dashboard shell + menu management"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT build orders/cash/reports/staff/receipts/settings pages — placeholder only this batch
+- Do NOT add image upload for menu items (paste URL only for now)
+- Do NOT add bulk operations (multi-select edit/delete)
+- Do NOT add menu version history
+- Do NOT add CORS configuration to pos-admin (Next.js calls pos-api server-to-server)
+- Do NOT deploy to Vercel
+- Do NOT add Stripe Connect onboarding (deferred)
+- Do NOT modify the prototype at artifacts/nuatis-pos
+- Do NOT add password reset / email verification (deferred to MVP polish)
+- Do NOT add multi-language support
+- Do NOT add the "Generate starter menu" seed endpoint (P2 task — defer; show empty state with manual guidance)
+- Do NOT add light/dark theme toggle (just light/paper for MVP)
+- Do NOT touch supabase/ folder
+- Do NOT add tests for React components (unit-test the API endpoints; UI tested manually for now)
+
+TECH CONSTRAINTS
+- Next.js 14 App Router (not Pages Router)
+- Auth.js v5 (next-auth@5.0.0-beta) — same as Suite
+- Server components by default; "use client" only when needed (forms, drawers, mutations)
+- React Query for client-side mutations + cache invalidation
+- All API calls go through src/lib/api-client.ts
+- Workspace dep: @nuatis/pos-shared via workspace:*
+- Tailwind v3 (NOT v4 — Suite already established v3)
+- Brand tokens match the prototype: --color-brand: #0047FF, Lora/Inter/JetBrains Mono
+- All money inputs: dollars in UI, cents in API payloads (convert at boundary)
+- All forms validated client-side via Zod schemas from pos-shared
+- ESM modules throughout
+
+ACCEPTANCE
+1. apps/pos-admin folder exists with full Next.js 14 structure
+2. pnpm install from root succeeds (workspace links resolve)
+3. pnpm -F @nuatis/pos-admin typecheck → 0 errors
+4. pnpm -F @nuatis/pos-admin dev boots on port 3001 (verify via curl http://localhost:3001 returns HTML)
+5. /sign-up page renders, form submits to pos-api, creates tenant + location + owner
+6. /sign-in page accepts credentials, calls pos-api, redirects to /
+7. / (dashboard home) renders with sidebar + welcome card + 4 summary cards
+8. /menu loads /v1/menu/tree, renders categories + items
+9. Add/edit/delete category works (round-trips through API)
+10. Add/edit/delete menu item works
+11. Modifier groups drawer works
+12. Placeholder pages /orders, /cash, /reports, /staff, /receipts, /settings render "Coming soon"
+13. Sign out clears session and redirects to /sign-in
+14. pos-api typecheck + tests still pass with new sign-up endpoint
+15. git status clean post-commit
+16. git log --oneline -1 matches commit message
+
+HARD STOP
+Stop after scope. Report:
+- File counts and structure of apps/pos-admin
+- Migration delta if any (probably none — sign-up uses existing tables)
+- Test counts (preserve baseline + new pos-api sign-up tests)
+- TS workarounds (especially around Auth.js v5 module augmentation, Next.js App Router types, React Query 5 types)
+- Confirm migrations 0001-0013 untouched
+- Confirm prototype at artifacts/nuatis-pos untouched
+- Open questions for Batch 14 (orders + cash drawer admin screens — should they live as separate pages or be combined into an "operations" page? what's the right detail level for a single order's drill-down view? do we want a manual cash event form or only auto-events from sales/refunds?)
+
+Wait for next prompt.

@@ -11,6 +11,27 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "apps/pos-admin: Admin Portal"
+
+[[workflows.workflow]]
+name = "apps/pos-admin: Admin Portal"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @nuatis/pos-admin run dev"
+waitForPort = 3001
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
@@ -18,6 +39,10 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[[ports]]
+localPort = 3001
+externalPort = 3001
 
 [[ports]]
 localPort = 3002
@@ -38,3 +63,10 @@ externalPort = 80
 [[ports]]
 localPort = 22908
 externalPort = 3000
+
+[userenv]
+
+[userenv.shared]
+AUTH_SECRET = "zA6QVCj5M2xeyJWycg9qcBuSherxUjDUzpJl6ECzyX8="
+NEXTAUTH_SECRET = "zA6QVCj5M2xeyJWycg9qcBuSherxUjDUzpJl6ECzyX8="
+POS_API_URL = "http://localhost:3002"

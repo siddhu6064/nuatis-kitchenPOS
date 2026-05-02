@@ -69,3 +69,23 @@ export const PinResponseSchema = z.object({
   }),
 });
 export type PinResponse = z.infer<typeof PinResponseSchema>;
+
+// Sign-up (owner self-registration — creates tenant + location + owner staff)
+export const SignUpRequestSchema = z.object({
+  business_name: z.string().min(1).max(100),
+  vertical: z.enum(["cafe", "restaurant"]),
+  full_name: z.string().min(1).max(100),
+  email: EmailSchema,
+  password: PasswordSchema,
+  timezone: z.string().optional().default("America/Chicago"),
+  terms_accepted: z.literal(true),
+});
+export type SignUpRequest = z.infer<typeof SignUpRequestSchema>;
+
+export const SignUpResponseSchema = z.object({
+  tenant_id: z.string().uuid(),
+  location_id: z.string().uuid(),
+  owner_staff_id: z.string().uuid(),
+  message: z.string(),
+});
+export type SignUpResponse = z.infer<typeof SignUpResponseSchema>;
