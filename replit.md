@@ -42,6 +42,17 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - Auth routes: `/api/login`, `/api/callback`, `/api/logout`, `/api/auth/user`
 - Sessions stored in PostgreSQL (`sessions` table via `replit-auth` schema)
 
+### POS API (`apps/pos-api`) — development/test server
+- Express ESM TypeScript on port 3002
+- 11 Supabase migrations, full route coverage (auth, menu, orders, KDS, cash drawer, receipts)
+- **Batch 11**: Receipt pipeline — `POST /v1/orders/:id/receipts`, `GET /r/:token`, BullMQ workers (email via Resend, SMS via Telnyx), 90-day signed receipt token, TCPA opt-in
+- All external services (Upstash Redis, Resend, Telnyx) optional — graceful mock mode
+- 76 tests passing (35 skip without Supabase, 1 todo)
+
+### pos-shared (`packages/pos-shared`)
+- Composite TypeScript library — Zod schemas shared between pos-api and nuatis-pos
+- Schemas: auth, cash, common, menu, orders, receipts, staff
+
 ## Auth
 
 - Replit Auth (OpenID Connect with PKCE)

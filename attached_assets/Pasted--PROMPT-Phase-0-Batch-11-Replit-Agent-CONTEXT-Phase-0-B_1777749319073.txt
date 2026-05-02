@@ -1,0 +1,243 @@
+▶ PROMPT [Phase 0 · Batch 11 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-10 complete: 11 migrations, full API (auth, menu, orders, KDS bump, cash drawer + manager PIN override), prototype with /pos and /kds, 58 tests passing. This batch adds receipt sending: customer pays → terminal prompts for email + phone + TCPA opt-in → API enqueues BullMQ jobs → workers send via Resend (email) and Telnyx (SMS). All three external services (Resend, Telnyx, Upstash) configured but optional via env — graceful no-op + console-log when not set, real send when env present.
+
+GOAL
+Working receipt pipeline: POST /v1/orders/:id/receipts with email/phone/sms_opt_in enqueues background jobs; receipt-email worker renders styled HTML and sends via Resend; receipt-sms worker checks TCPA opt-in then sends short URL via Telnyx; web receipt page at /r/:token serves a signed-token URL showing the order. All testable in mock mode without external accounts; real delivery when env configured.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schemas
+═══════════════════════════════════════
+
+1. Create packages/pos-shared/src/receipts.ts:
+   - SendReceiptRequestSchema = z.object({
+       email: z.string().email().optional(),
+       phone: z.string().regex(/^\+?[1-9]\d{1,14}$/).optional(),
+       sms_opt_in: z.boolean().default(false),
+       sms_opt_in_text: z.string().optional()  // exact text the customer agreed to
+     }).refine(d => d.email || d.phone, { message: 'Must provide email or phone' })
+   - SendReceiptResponseSchema = z.object({ jobs_enqueued: z.array(z.enum(['email', 'sms'])), receipt_token: z.string() })
+   - ReceiptViewSchema (for /r/:token public page) — order summary + items + totals + tip + last4 (optional) + tenant name + location address
+   - Export inferred types
+   - Re-export from index.ts
+
+2. Rebuild pos-shared.
+
+═══════════════════════════════════════
+SECTION 2 — Migration 0012 (receipt tracking)
+═══════════════════════════════════════
+
+3. supabase/migrations/20260502160000_receipts.sql:
+   - email_messages table: id, tenant_id, order_id (nullable, generic enough for non-order emails later), to_email, subject, status enum ('queued','sent','failed','bounced'), provider_message_id text nullable, error text nullable, sent_at timestamptz, created_at; RLS on tenant_id; service_role bypass
+   - sms_messages table: id, tenant_id, order_id (nullable), to_phone, body, status enum ('queued','sent','failed'), provider_message_id, error, sent_at, created_at; RLS + bypass
+   - alter table contacts: add columns sms_opt_in_text text, sms_opt_in_ip inet (TCPA evidence; we already have sms_opt_in + sms_opt_in_at from foundation migration)
+   - Create indexes on (tenant_id, created_at desc) for both tables
+   - Inspect existing migrations FIRST — only add the actual delta
+
+═══════════════════════════════════════
+SECTION 3 — pos-api: BullMQ + Upstash setup
+═══════════════════════════════════════
+
+4. Add to apps/pos-api dependencies:
+   - bullmq@^5.21
+   - ioredis@^5.4 (BullMQ peer)
+   - resend@^4 (Resend SDK; latest stable)
+
+5. Add to apps/pos-api/.env.example:
+   - UPSTASH_REDIS_URL= (note: "rediss://... URL from Upstash console; required for receipt workers")
+   - RESEND_API_KEY= (note: "re_... from resend.com; mock mode if absent")
+   - TELNYX_API_KEY= (note: "KEY... from telnyx.com; mock mode if absent")
+   - TELNYX_FROM_NUMBER= (note: "+1XXXXXXXXXX in E.164 format; required if TELNYX_API_KEY set")
+   - RECEIPT_BASE_URL=http://localhost:3002 (note: "public-facing base URL for /r/:token receipt links")
+   - RECEIPT_TOKEN_SECRET= (note: "32+ bytes for signing receipt URLs; defaults to POS_JWT_SECRET if absent")
+
+6. Update apps/pos-api/src/env.ts:
+   - All four credential fields optional (warn if missing, don't fail boot)
+   - When UPSTASH_REDIS_URL absent: workers log "queue disabled — mock mode" and the API still accepts /v1/orders/:id/receipts requests but enqueue is a no-op that returns the same response shape
+
+7. apps/pos-api/src/lib/queue.ts:
+   - Singleton BullMQ Queue + Worker setup
+   - Two queues: 'receipt-email' and 'receipt-sms'
+   - Initialize only if UPSTASH_REDIS_URL set; otherwise export no-op stubs that log "[mock] would enqueue ..."
+   - Default job options: attempts 3, backoff exponential 30s
+   - Workers registered in same process (single-process MVP; can split to dedicated worker process later)
+
+8. apps/pos-api/src/lib/email.ts:
+   - sendReceiptEmail({ to, subject, html, text }) — uses Resend SDK if RESEND_API_KEY set; else logs "[mock email] {to} {subject}" and returns mock message_id
+   - Wrap in try/catch; never throw to caller (worker handles errors via BullMQ retries)
+
+9. apps/pos-api/src/lib/sms.ts:
+   - sendSms({ to, body }) — uses Telnyx fetch API if TELNYX_API_KEY set; else logs "[mock sms]" and returns mock id
+   - Telnyx HTTP API (no SDK needed): POST https://api.telnyx.com/v2/messages with { from, to, text } — Authorization: Bearer ${TELNYX_API_KEY}
+   - Same try/catch pattern
+
+═══════════════════════════════════════
+SECTION 4 — Receipt token signing
+═══════════════════════════════════════
+
+10. apps/pos-api/src/lib/receipt-token.ts:
+    - signReceiptToken(order_id, tenant_id) — uses jose to sign a JWT with payload { order_id, tenant_id, kind: 'receipt' }; expires in 90 days; alg HS256; secret from env.RECEIPT_TOKEN_SECRET (or POS_JWT_SECRET fallback)
+    - verifyReceiptToken(token) → returns parsed payload or throws
+
+═══════════════════════════════════════
+SECTION 5 — pos-api routes
+═══════════════════════════════════════
+
+11. apps/pos-api/src/routes/receipts/send.ts:
+    - POST /v1/orders/:id/receipts — any auth (session or terminal); body = SendReceiptRequestSchema
+    - Validates order is paid (cannot send receipt for unpaid order)
+    - Upserts contact: lookup by phone (if provided) or email (if provided) within tenant; create if not found
+    - If sms_opt_in true: update contact.sms_opt_in=true, sms_opt_in_at=now(), sms_opt_in_text=body.sms_opt_in_text || 'Yes, send me text receipts', sms_opt_in_ip=req.ip
+    - Sign receipt token; build receipt_url = `${env.RECEIPT_BASE_URL}/r/${token}`
+    - If email present: enqueue receipt-email job with { tenant_id, order_id, to: email, receipt_url }
+    - If phone present AND contact.sms_opt_in true: enqueue receipt-sms job with { tenant_id, order_id, to: phone, receipt_url }
+    - Returns { jobs_enqueued: [...], receipt_token }
+    - Audit log action='receipt_send' with channels in payload
+
+12. apps/pos-api/src/routes/receipts/view.ts:
+    - GET /r/:token — public route (NO auth required) — but verify token signature
+    - Decodes token → fetches order + items + payment + tenant + location
+    - Returns minimal HTML page (not JSON) with the receipt — owner brand visible, order details, totals, tip, last4 if card payment
+    - Use a simple template literal; no React SSR for this batch
+    - Cache headers: private, max-age=86400 (receipts are immutable)
+    - 404 if token invalid or order not found
+
+═══════════════════════════════════════
+SECTION 6 — BullMQ workers
+═══════════════════════════════════════
+
+13. apps/pos-api/src/workers/receipt-email.ts:
+    - BullMQ Worker subscribed to 'receipt-email' queue
+    - On job: fetch order + items + tenant + location from DB
+    - Render HTML template — header (tenant name + logo placeholder), order # + date, item table, subtotal/tax/tip/total, "View receipt online: {receipt_url}" link, footer with location address
+    - Render plain-text fallback
+    - Subject line: "Receipt from {tenant.name} — Order #{order.order_number}"
+    - Insert email_messages row status='queued'; call sendReceiptEmail; on success update status='sent', sent_at=now(), provider_message_id; on error update status='failed', error message
+    - Worker logs job lifecycle via pino
+
+14. apps/pos-api/src/workers/receipt-sms.ts:
+    - Same shape as email worker
+    - Body: "Thanks for your visit to {tenant.name}! Your receipt: {short_receipt_url}\nReply STOP to opt out."
+    - TCPA double-check: re-fetch contact, verify sms_opt_in still true; if not, mark sms_messages row 'failed' with error 'opt_in_revoked' and skip send
+    - Insert sms_messages row, send via Telnyx, update on result
+
+15. Workers initialized at API boot in src/index.ts:
+    - If UPSTASH_REDIS_URL present: start workers in same process
+    - Log "receipt workers running" or "receipt workers in mock mode (no Redis)"
+    - On SIGTERM: graceful worker close before server close
+
+═══════════════════════════════════════
+SECTION 7 — Wire prototype receipt prompt
+═══════════════════════════════════════
+
+16. Update artifacts/nuatis-pos/src/lib/api/orders.ts:
+    - Add sendReceipt(order_id, { email, phone, sms_opt_in }) → POST /v1/orders/:id/receipts
+
+17. Update artifacts/nuatis-pos/src/components/Approved.tsx (or wherever the post-payment screen lives):
+    - Add receipt prompt UI after Approved screen: "How would you like your receipt?"
+    - Email input + Phone input + TCPA opt-in checkbox: "I agree to receive a text receipt. Reply STOP to opt out. Msg & data rates may apply."
+    - Three buttons: "Email", "Text", "Both", "Skip"
+    - On submit: calls sendReceipt with appropriate fields; shows "Receipt sent!" confirmation; auto-advances to New Order screen after 2s
+    - Skip button: skips directly to New Order screen
+    - Use existing brand styling (Lora serif headings, Inter body, brand-blue CTAs, JetBrains Mono for the consent text)
+
+18. Add to artifacts/nuatis-pos/src/lib/api/types.ts:
+    - Copy SendReceiptRequest + SendReceiptResponse Zod schemas with sync banner update
+
+═══════════════════════════════════════
+SECTION 8 — Tests
+═══════════════════════════════════════
+
+19. apps/pos-api/src/lib/receipt-token.test.ts:
+    - Round-trip: sign → verify returns same payload
+    - Verify rejects expired token
+    - Verify rejects token signed with different secret
+
+20. apps/pos-api/src/routes/receipts/receipts.test.ts:
+    - Skip-graceful integration tests (need Supabase): full flow — create order → pay → POST /v1/orders/:id/receipts with email → check email_messages row exists with status='queued'
+    - Unit tests (always run): SendReceiptRequest schema validates; refuses without email or phone; phone E.164 regex
+    - Unit test: sendReceiptEmail in mock mode returns expected shape and logs
+
+21. apps/pos-api/src/workers/receipt-email.test.ts (unit):
+    - Mock the sendReceiptEmail function; verify worker calls it with correctly-rendered HTML for a sample order
+    - Verify status transitions: queued → sent on success; queued → failed on error
+    - Verify email_messages row inserted before send call (so we have a record even on send failure)
+
+═══════════════════════════════════════
+SECTION 9 — Documentation
+═══════════════════════════════════════
+
+22. Update apps/pos-api/README.md:
+    - Routes table: add POST /v1/orders/:id/receipts and GET /r/:token
+    - New section "Receipt Workers": explains mock mode, env vars, how to test locally, TCPA pattern
+    - Document that the API process runs both Express + BullMQ workers; production may split these to separate processes
+
+23. Update root README.md local-dev section:
+    - Add to "before you can fully run": Resend + Telnyx + Upstash account setup (mark all three as "optional for development; mock mode runs without")
+
+═══════════════════════════════════════
+SECTION 10 — Commit
+═══════════════════════════════════════
+
+24. From root: pnpm install, pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (preserve baseline + add new unit tests).
+
+25. Commit + push:
+    - git add .
+    - git commit -m "feat(receipts): email + SMS via BullMQ workers + TCPA opt-in + /r/:token public page"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add Twilio, SendGrid, Postmark, or any other email/SMS providers (Resend + Telnyx only)
+- Do NOT add receipt PDF generation (web link is enough for MVP)
+- Do NOT add receipt printing via Bluetooth printer (Phase 10 hardware integration)
+- Do NOT add multi-language receipt templates (English only for MVP)
+- Do NOT add scheduled receipt resend if first attempt fails permanently (BullMQ retries handle transient errors)
+- Do NOT add receipt-resend endpoint (cashier just hits POST again with same data)
+- Do NOT split workers into a separate apps/pos-workers process — same-process for MVP, clear refactor path documented
+- Do NOT add admin UI for viewing email/SMS history (Batch C — admin app)
+- Do NOT add unsubscribe webhook handler for STOP replies (Phase post-MVP; manual handling for now)
+- Do NOT add MMS or rich-format SMS (text-only)
+- Do NOT touch supabase/ folder beyond migration 0012
+- Do NOT modify cash drawer endpoints
+- Do NOT modify auth or menu code
+
+TECH CONSTRAINTS
+- Resend SDK — official package, ESM-compatible
+- Telnyx — call HTTP API directly via fetch, NOT the SDK (avoid CommonJS interop pain)
+- BullMQ workers in same process for MVP; document refactor path to dedicated worker process
+- All money in cents
+- TCPA: every SMS message recipient MUST have contact.sms_opt_in=true, verified at send time (not just at enqueue time)
+- Receipt URL token JWT: 90-day expiry, signed HS256
+- Email + SMS message rows persist regardless of mock mode (so we have logs even without external services)
+- Express routers IRouter annotation rule
+- Worker logs prefixed with [worker:receipt-email] or [worker:receipt-sms] for filterability
+- ESM NodeNext .js suffix on imports
+
+ACCEPTANCE
+1. packages/pos-shared/dist/receipts.d.ts has all schemas
+2. Migration 0012 file exists; migrations 0001-0011 untouched
+3. apps/pos-api/src/lib/queue.ts boots cleanly without UPSTASH_REDIS_URL (mock mode, logs warning)
+4. apps/pos-api/src/lib/email.ts sendReceiptEmail returns mock id when RESEND_API_KEY absent
+5. apps/pos-api/src/lib/sms.ts sendSms returns mock id when TELNYX_API_KEY absent
+6. POST /v1/orders/:id/receipts with valid body returns { jobs_enqueued, receipt_token }
+7. GET /r/:token (with valid token) returns 200 HTML; with invalid token returns 404
+8. pnpm typecheck → 0 errors
+9. pnpm test → preserves 58 unit pass baseline; new unit tests pass; integration tests skip-graceful
+10. Prototype Approved screen has receipt prompt UI with email/phone/TCPA-opt-in
+11. README updated with receipt routes + worker docs + env var docs
+12. git status clean post-commit
+13. git log --oneline -1 matches spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Migration 0012 delta summary (what was added)
+- Test counts (pass / skip / fail)
+- TS workarounds (especially around BullMQ worker types and Resend SDK ESM compat)
+- Confirm migrations 0001-0011 untouched
+- Confirm only apps/pos-api and packages/pos-shared and supabase/ and artifacts/nuatis-pos changed
+- Open questions for Batch 12 (Reports + end-of-day rollup): should rollup be a BullMQ scheduled job (cron) firing at 00:01 tenant-local, or a real-time aggregation query each time GET /v1/reports/end-of-day is called; should rollup snapshot to a reports_daily table for historical immutability OR re-aggregate live every time
+
+Wait for next prompt.

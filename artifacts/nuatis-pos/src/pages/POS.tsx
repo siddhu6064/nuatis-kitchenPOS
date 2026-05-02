@@ -7,12 +7,13 @@ import { TipKeypad } from "@/components/checkout/TipKeypad";
 import { TapToPayScreen } from "@/components/checkout/TapToPayScreen";
 import { ApprovedScreen } from "@/components/checkout/ApprovedScreen";
 import { ReceiptScreen } from "@/components/checkout/ReceiptScreen";
+import { ReceiptPromptScreen } from "@/components/checkout/ReceiptPromptScreen";
 import { useOrder } from "@/hooks/useOrder";
 import { calcTipFromPct, calcGrandTotal } from "@/lib/tipMath";
 import { saveLastOrder, loadLastOrder, clearLastOrder, type LastOrder } from "@/lib/lastOrder";
 import type { ApiMenuItem } from "@/lib/api/types";
 
-type CheckoutStep = "cart" | "tip-select" | "tap-to-pay" | "approved" | "receipt";
+type CheckoutStep = "cart" | "tip-select" | "tap-to-pay" | "approved" | "send-receipt" | "receipt";
 
 const TIP_PCT: Record<Exclude<TipOption, "custom" | "none">, number> = {
   "15": 0.15,
@@ -31,6 +32,7 @@ export function POS() {
     clearCart,
     totals,
     itemCount,
+    orderId,
     sendToKitchen,
     pay,
   } = useOrder();
@@ -41,6 +43,8 @@ export function POS() {
   const [keypadValue, setKeypadValue] = useState("");
   const [showKeypad, setShowKeypad] = useState(false);
   const [lastOrder, setLastOrder] = useState<LastOrder | null>(null);
+  // Capture the order id before pay() clears it — needed for receipt sending
+  const [paidOrderId, setPaidOrderId] = useState<string | null>(null);
 
   // Derived tip + totals
   const tipAmount =
@@ -64,14 +68,17 @@ export function POS() {
   const handleCancelPay = () => setStep("tip-select");
 
   const handleApproved = useCallback(() => {
+    // Capture the order id BEFORE pay() sets it to null
+    const currentOrderId = orderId;
     const tipCents = Math.round(tipAmount * 100);
     pay("card_mock", tipCents).catch((err: unknown) => {
       console.error("Payment API error (prototype — proceeding anyway):", err);
     });
+    setPaidOrderId(currentOrderId);
     saveLastOrder(lines, totals.subtotal, totals.tax, tipAmount, grandTotal);
     setLastOrder(loadLastOrder());
     setStep("approved");
-  }, [lines, totals.subtotal, totals.tax, tipAmount, grandTotal, pay]);
+  }, [orderId, lines, totals.subtotal, totals.tax, tipAmount, grandTotal, pay]);
 
   const handleViewReceipt = () => {
     const order = lastOrder ?? loadLastOrder();
@@ -81,6 +88,10 @@ export function POS() {
 
   const handleBackToApproved = () => setStep("approved");
 
+  // Goes to the receipt prompt step (triggered by "Send Receipt" on approved screen)
+  const handleGoToReceiptPrompt = () => setStep("send-receipt");
+
+  // Resets everything and returns to cart (called after receipt sent or skipped)
   const handleNewOrder = () => {
     clearCart();
     clearLastOrder();
@@ -88,6 +99,7 @@ export function POS() {
     setCustomTipAmount(0);
     setKeypadValue("");
     setLastOrder(null);
+    setPaidOrderId(null);
     setStep("cart");
   };
 
@@ -236,6 +248,15 @@ export function POS() {
           grandTotal={grandTotal}
           onNewOrder={handleNewOrder}
           onViewReceipt={handleViewReceipt}
+          onSendReceipt={handleGoToReceiptPrompt}
+        />
+      )}
+
+      {/* Receipt prompt — send digital receipt via email / SMS */}
+      {step === "send-receipt" && (
+        <ReceiptPromptScreen
+          orderId={paidOrderId}
+          onDone={handleNewOrder}
         />
       )}
 

@@ -15,6 +15,16 @@ const envSchema = z.object({
   // Comma-separated list of allowed origins for CORS. Optional — if not set,
   // CORS middleware is skipped (fine for Replit proxy; needed for local dev).
   CORS_ALLOWED_ORIGINS: z.string().min(1).optional(),
+
+  // ---------------------------------------------------------------------------
+  // Receipt delivery — all optional; mock mode runs without any of them
+  // ---------------------------------------------------------------------------
+  UPSTASH_REDIS_URL: z.string().url().optional(),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  TELNYX_API_KEY: z.string().min(1).optional(),
+  TELNYX_FROM_NUMBER: z.string().min(1).optional(),
+  RECEIPT_BASE_URL: z.string().url().default("http://localhost:3002"),
+  RECEIPT_TOKEN_SECRET: z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);
@@ -33,4 +43,13 @@ if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn(
     "[env] Supabase not configured — /v1/health will report supabase: not_configured"
   );
+}
+if (!env.UPSTASH_REDIS_URL) {
+  console.warn("[env] UPSTASH_REDIS_URL not set — receipt workers in mock mode");
+}
+if (!env.RESEND_API_KEY) {
+  console.warn("[env] RESEND_API_KEY not set — email delivery in mock mode");
+}
+if (!env.TELNYX_API_KEY) {
+  console.warn("[env] TELNYX_API_KEY not set — SMS delivery in mock mode");
 }

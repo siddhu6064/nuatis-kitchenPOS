@@ -48,6 +48,8 @@ Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 | POST | `/v1/orders/:id/checkout` | Terminal | Compute totals (tax 8.25%) |
 | POST | `/v1/orders/:id/payments` | Terminal | Record payment; cash requires open shift |
 | POST | `/v1/orders/:id/void` | Any + manager PIN | Void order (managers direct; cashiers need PIN) |
+| POST | `/v1/orders/:id/receipts` | Terminal or Session | Enqueue email + SMS receipt delivery |
+| GET | `/r/:token` | Public (signed token) | Web receipt page (HTML, 90-day signed URL) |
 | POST | `/v1/cash/sessions` | Terminal or Session | Open a new cash drawer shift |
 | GET | `/v1/cash/sessions/current` | Terminal or Session | Get open session for a location |
 | GET | `/v1/cash/sessions/:id` | Terminal or Session | Session detail + all cash events |
@@ -93,6 +95,63 @@ close shift (POST /sessions/:id/close)
 - One open session per location at a time (enforced by partial unique index).
 - All amounts in cents (integers). Variance can be negative (short) or positive (over).
 
+## Receipt Workers
+
+After a payment is recorded, the POS terminal can call `POST /v1/orders/:id/receipts` with the
+customer's email, phone, or both. The API signs a 90-day receipt token and enqueues BullMQ jobs
+for delivery.
+
+### Mock mode (default — no external accounts needed)
+
+All three external services (Upstash Redis, Resend, Telnyx) are **optional**. When their env vars
+are absent, the server boots normally and `POST /v1/orders/:id/receipts` still returns the expected
+response — the jobs are logged to stdout instead of being delivered.
+
+```
+[mock] would enqueue receipt-email job
+[mock email] customer@example.com — Receipt from Nuatis Cafe...
+```
+
+### Real delivery setup
+
+| Service | Env var | Purpose |
+|---------|---------|---------|
+| [Upstash Redis](https://console.upstash.com) | `UPSTASH_REDIS_URL` | BullMQ job queue + retry |
+| [Resend](https://resend.com) | `RESEND_API_KEY` | Email delivery |
+| [Telnyx](https://telnyx.com) | `TELNYX_API_KEY` + `TELNYX_FROM_NUMBER` | SMS delivery |
+| — | `RECEIPT_BASE_URL` | Public base URL for `/r/:token` links |
+| — | `RECEIPT_TOKEN_SECRET` | Separate signing key (falls back to `POS_JWT_SECRET`) |
+
+Workers run **in the same process** as the Express server (single-process MVP). In production,
+split them to a dedicated worker process by running `src/workers/receipt-email.ts` and
+`src/workers/receipt-sms.ts` directly against the same Redis queue.
+
+### TCPA compliance
+
+When the customer provides a phone number, they must check the TCPA opt-in checkbox on the
+receipt prompt screen. The exact consent text and the customer's IP address are stored in the
+`contacts` table (`sms_opt_in_text`, `sms_opt_in_ip`). The SMS worker re-fetches the contact and
+aborts delivery if `sms_opt_in` has been revoked since the job was enqueued.
+
+### Testing receipt flow locally
+
+```bash
+# 1. Boot the API (any terminal JWT works)
+pnpm --filter @nuatis/pos-api dev
+
+# 2. Authenticate + complete an order → get a paid order id
+
+# 3. Send a mock receipt (no Redis/Resend/Telnyx needed)
+curl -X POST http://localhost:3002/v1/orders/<order_id>/receipts \
+  -H "Authorization: Bearer <terminal_jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com"}'
+# → {"jobs_enqueued":["email"],"receipt_token":"eyJ..."}
+
+# 4. View the receipt page
+open "http://localhost:3002/r/<receipt_token>"
+```
+
 ## Tests
 
 ```bash
@@ -101,8 +160,8 @@ pnpm --filter @nuatis/pos-api test
 
 | Condition | Result |
 |-----------|--------|
-| No Supabase (default) | 47 pass, 36 skip |
-| With `supabase start` | 83 pass, 0 skip |
+| No Supabase, no Redis (default) | 58+ pass, 36 skip |
+| With `supabase start` | 94+ pass, 0 skip |
 
 ## Folder structure
 
@@ -113,9 +172,13 @@ apps/pos-api/
 │   ├── env.ts                # Zod-validated env (SUPABASE_URL optional)
 │   ├── lib/
 │   │   ├── db.ts             # tenantSelect / recalcOrderTotals / calculateExpectedCash / writeAuditLog
+│   │   ├── email.ts          # sendReceiptEmail — Resend SDK or mock log
 │   │   ├── jwt.ts            # signTerminalJwt / signSessionJwt / verifyJwt
 │   │   ├── logger.ts         # Pino (pretty dev, JSON prod)
 │   │   ├── passwords.ts      # bcrypt helpers (hashPin / verifyPin / hashPassword / verifyPassword)
+│   │   ├── queue.ts          # BullMQ queue singletons + enqueueReceiptEmail/Sms (no-op in mock mode)
+│   │   ├── receipt-token.ts  # signReceiptToken / verifyReceiptToken (90-day HS256 JWT)
+│   │   ├── sms.ts            # sendSms — Telnyx HTTP API or mock log
 │   │   └── supabase.ts       # Singleton service_role client
 │   ├── middleware/
 │   │   ├── auth.ts           # requireAuth({ kinds }) JWT guard
@@ -123,12 +186,16 @@ apps/pos-api/
 │   │   ├── request-id.ts     # X-Request-Id per request
 │   │   ├── role-guard.ts     # requireRole([...]) session-role guard
 │   │   └── error-handler.ts  # Centralized error shape
-│   └── routes/
-│       ├── auth.ts           # sign-in + pin endpoints
-│       ├── health.ts         # /v1/health
-│       ├── cash/             # cash drawer lifecycle (open/close shift, events, variance)
-│       ├── menu/             # categories + items + tree
-│       └── orders/           # full order state machine + KDS bump + void
+│   ├── routes/
+│   │   ├── auth.ts           # sign-in + pin endpoints
+│   │   ├── health.ts         # /v1/health
+│   │   ├── cash/             # cash drawer lifecycle (open/close shift, events, variance)
+│   │   ├── menu/             # categories + items + tree
+│   │   ├── orders/           # full order state machine + KDS bump + void + receipt send
+│   │   └── receipts/         # send.ts (POST /:id/receipts) + view.ts (GET /r/:token)
+│   └── workers/
+│       ├── receipt-email.ts  # BullMQ worker — fetches order, renders HTML, sends via Resend
+│       └── receipt-sms.ts    # BullMQ worker — TCPA double-check, sends via Telnyx
 ├── .env                      # Local secrets — gitignored, never commit
 ├── .env.example              # Template — committed
 └── README.md

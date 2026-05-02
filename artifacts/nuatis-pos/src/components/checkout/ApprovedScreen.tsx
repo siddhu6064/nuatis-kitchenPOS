@@ -8,9 +8,10 @@ interface Props {
   grandTotal: number;
   onNewOrder: () => void;
   onViewReceipt: () => void;
+  onSendReceipt?: () => void;
 }
 
-export function ApprovedScreen({ subtotal, tax, tip, grandTotal, onNewOrder, onViewReceipt }: Props) {
+export function ApprovedScreen({ subtotal, tax, tip, grandTotal, onNewOrder, onViewReceipt, onSendReceipt }: Props) {
   return (
     <div className="fixed inset-0 z-40 bg-emerald-600 flex flex-col items-center justify-center px-6">
       {/* Checkmark */}
@@ -45,12 +46,25 @@ export function ApprovedScreen({ subtotal, tax, tip, grandTotal, onNewOrder, onV
 
       {/* Actions */}
       <div className="w-full max-w-sm space-y-3">
+        {onSendReceipt && (
+          <button
+            onClick={onSendReceipt}
+            className="
+              w-full py-4 rounded-xl text-base font-semibold
+              bg-white text-emerald-700
+              hover:bg-emerald-50 active:bg-emerald-100
+              transition-colors duration-100
+            "
+          >
+            Send Receipt
+          </button>
+        )}
         <button
           onClick={onNewOrder}
           className="
             w-full py-4 rounded-xl text-base font-semibold
-            bg-white text-emerald-700
-            hover:bg-emerald-50 active:bg-emerald-100
+            bg-white/15 text-white border border-white/30
+            hover:bg-white/25 active:bg-white/30
             transition-colors duration-100
           "
         >

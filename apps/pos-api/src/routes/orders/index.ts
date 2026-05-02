@@ -5,6 +5,7 @@ import { kitchenRouter } from "./kitchen.js";
 import { checkoutRouter } from "./checkout.js";
 import { paymentsRouter } from "./payments.js";
 import { voidRouter } from "./void.js";
+import { receiptSendRouter } from "../receipts/index.js";
 
 const ordersBarrel: IRouter = Router();
 
@@ -17,5 +18,6 @@ ordersBarrel.use("/:id/send-to-kitchen", kitchenRouter);
 ordersBarrel.use("/:id/checkout", checkoutRouter);
 ordersBarrel.use("/:id/payments", paymentsRouter);
 ordersBarrel.use("/:id/void", voidRouter);
+ordersBarrel.use("/:id/receipts", receiptSendRouter);
 
 export { ordersBarrel as ordersRouter };

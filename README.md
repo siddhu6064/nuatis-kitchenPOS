@@ -110,6 +110,16 @@ cp artifacts/nuatis-pos/.env.example artifacts/nuatis-pos/.env
 # No edits needed — demo UUIDs are pre-filled from seed.sql
 ```
 
+**Receipt delivery (optional — mock mode works without these):**
+
+| Service | Env var in `apps/pos-api/.env` | Purpose |
+|---------|-------------------------------|---------|
+| [Upstash Redis](https://console.upstash.com) | `UPSTASH_REDIS_URL` | BullMQ job queue |
+| [Resend](https://resend.com) | `RESEND_API_KEY` | Email delivery |
+| [Telnyx](https://telnyx.com) | `TELNYX_API_KEY` + `TELNYX_FROM_NUMBER` | SMS delivery |
+
+When absent, receipts are logged to stdout and the API still accepts requests normally.
+
 ---
 
 ### Step 4 — Boot the API and prototype

@@ -1,5 +1,5 @@
 import { post, del } from "./client";
-import type { OrderItemResponse, PaymentApiResponse } from "./types";
+import type { OrderItemResponse, PaymentApiResponse, SendReceiptRequest, SendReceiptResponse } from "./types";
 
 export function createOrder(
   location_id: string,
@@ -47,4 +47,11 @@ export function createPayment(
   tip_cents: number
 ): Promise<PaymentApiResponse> {
   return post(`/v1/orders/${order_id}/payments`, { method, tip_cents });
+}
+
+export function sendReceipt(
+  order_id: string,
+  body: SendReceiptRequest
+): Promise<SendReceiptResponse> {
+  return post(`/v1/orders/${order_id}/receipts`, body);
 }

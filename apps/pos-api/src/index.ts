@@ -11,6 +11,10 @@ import { authRouter } from "./routes/auth.js";
 import { menuRouter } from "./routes/menu/index.js";
 import { ordersRouter } from "./routes/orders/index.js";
 import { cashRouter } from "./routes/cash/index.js";
+import { receiptViewRouter } from "./routes/receipts/index.js";
+import { startReceiptEmailWorker } from "./workers/receipt-email.js";
+import { startReceiptSmsWorker } from "./workers/receipt-sms.js";
+import { closeQueues } from "./lib/queue.js";
 
 const app = express();
 
@@ -50,6 +54,8 @@ app.use("/v1/auth", authRouter);
 app.use("/v1/menu", menuRouter);
 app.use("/v1/orders", ordersRouter);
 app.use("/v1/cash", cashRouter);
+// Public receipt view — no auth, signed token required
+app.use("/r", receiptViewRouter);
 
 // Error handler — must be last
 app.use(errorHandler);
@@ -58,12 +64,27 @@ const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, "pos-api ready");
 });
 
+// BullMQ workers — start in same process when Redis is configured
+const emailWorker = startReceiptEmailWorker();
+const smsWorker = startReceiptSmsWorker();
+if (emailWorker) {
+  logger.info("receipt workers running (Redis connected)");
+} else {
+  logger.info("receipt workers in mock mode (UPSTASH_REDIS_URL not set)");
+}
+
 // Graceful shutdown
 function shutdown(signal: string): void {
   logger.info({ signal }, "shutdown signal received — closing server");
-  server.close(() => {
-    logger.info("server closed");
-    process.exit(0);
+  void Promise.all([
+    emailWorker?.close(),
+    smsWorker?.close(),
+    closeQueues(),
+  ]).then(() => {
+    server.close(() => {
+      logger.info("server closed");
+      process.exit(0);
+    });
   });
 }
 

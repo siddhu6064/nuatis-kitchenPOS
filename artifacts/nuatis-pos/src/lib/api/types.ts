@@ -73,6 +73,23 @@ export interface PaymentApiResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Receipt sending — copied from @nuatis/pos-shared
+// Sync banner: updated 2026-05-02 batch 11
+// ---------------------------------------------------------------------------
+
+export interface SendReceiptRequest {
+  email?: string;
+  phone?: string;
+  sms_opt_in?: boolean;
+  sms_opt_in_text?: string;
+}
+
+export interface SendReceiptResponse {
+  jobs_enqueued: Array<"email" | "sms">;
+  receipt_token: string;
+}
+
+// ---------------------------------------------------------------------------
 // KDS Realtime event schemas — copied from @nuatis/pos-shared
 // Used at runtime in realtime.ts to validate incoming broadcast payloads.
 // ---------------------------------------------------------------------------
