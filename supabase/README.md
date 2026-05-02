@@ -107,3 +107,4 @@ Never edit an already-applied migration — always add a new one.
 | RLS policy pattern | `auth.jwt() -> 'app_metadata' ->> 'tenant_id'` | tenant_id injected by backend into JWT app_metadata at sign-in |
 | Realtime | `orders` + `order_items` tables published | KDS subscription support without extra config |
 | Post-MVP tables | Not created | memberships, gift cards, packages, floor plans, printers, tips ledger all deferred |
+| Migration 0007 (rls_corrections) | Corrective migration, 3 issues fixed | (1) service_role bypass policies added to all 17 RLS-enabled tables so backend workers bypass tenant JWT checks; (2) `tenant_id` denormalized onto `order_items` — original subquery-based policy was incompatible with Supabase Realtime row filtering; (3) `tenant_id` + full RLS added to `refunds` which was missed in migration 0003 |
