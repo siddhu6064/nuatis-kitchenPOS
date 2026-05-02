@@ -1,0 +1,80 @@
+▶ PROMPT [Phase 0 · Batch 2 · Replit Agent]
+
+CONTEXT
+Phase 0 Batch 1 created supabase/migrations/0001-0006 with multi-tenant schema + RLS. Review identified three corrections needed before we link to a real Supabase project: (1) service_role bypass policies missing, (2) order_items needs denormalized tenant_id for Realtime filtering, (3) refunds needs tenant_id + RLS for direct query paths. This batch is a single corrective migration that addresses all three. No new tables, no app code.
+
+GOAL
+Add migration 0007 that backfills service_role bypass policies on all 17 RLS-enabled tables AND denormalizes tenant_id onto order_items + refunds with proper indexes and RLS policy updates.
+
+SCOPE — BUILD THIS
+
+1. Create supabase/migrations/20260502120600_rls_corrections.sql
+
+2. Section A — service_role bypass policies (17 statements):
+   For each of the 17 RLS-enabled tables, add:
+     create policy service_role_bypass on <table>
+       for all to service_role
+       using (true)
+       with check (true);
+   
+   Tables: tenants, locations, staff_members, contacts, audit_log, menu_categories, menu_items, modifier_groups, modifier_options, menu_item_modifier_groups, orders, order_items, payments, refunds, terminals, cash_drawer_sessions, cash_events
+
+3. Section B — denormalize tenant_id on order_items:
+   - alter table order_items add column tenant_id uuid not null
+   - create index order_items_tenant_id_idx on order_items(tenant_id)
+   - drop policy tenant_isolation on order_items
+   - recreate policy tenant_isolation using direct tenant_id check (not subquery on orders)
+   
+   Note: this migration assumes order_items is empty (we have only seed data, and seed has no order_items). If seed has order_items, add a backfill UPDATE before the NOT NULL constraint.
+
+4. Section C — denormalize tenant_id on refunds:
+   - alter table refunds add column tenant_id uuid not null
+   - create index refunds_tenant_id_idx on refunds(tenant_id)
+   - drop existing policy if any (refunds had no tenant_isolation policy in batch 1)
+   - create policy tenant_isolation on refunds
+       using (tenant_id = (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::uuid)
+   - create policy service_role_bypass on refunds
+       for all to service_role using (true) with check (true)
+   
+   Note: refunds was missed in section A's list — section A has 17 entries assuming refunds already had RLS; verify against batch 1 and adjust if refunds RLS was missing entirely.
+
+5. Section D — verification queries (commented at bottom of migration as documentation, not executed):
+   - One query each that confirms: count of policies per table = 2 (tenant_isolation + service_role_bypass) on every RLS-enabled table
+   - Sample query showing service_role can read all rows
+   - Sample query showing anon role cannot read without proper JWT
+
+6. Update supabase/README.md decision-history section: add a note that migration 0007 corrects three issues from initial RLS design — service_role bypass added, tenant_id denormalized on order_items + refunds for Realtime filtering and direct query performance.
+
+7. Commit + push to main with message: feat(db): migration 0007 — service_role bypass + tenant_id denormalization on order_items, refunds
+
+SCOPE — DO NOT BUILD
+- Do NOT modify migrations 0001-0006 (immutable history; corrections always go in new migrations)
+- Do NOT touch seed.sql
+- Do NOT add tenant_id to any other tables (only order_items and refunds need it; everything else already has it directly or doesn't need it)
+- Do NOT add triggers to auto-populate tenant_id (app logic handles this; explicit > implicit)
+- Do NOT run supabase db push
+- Do NOT modify artifacts/ folder
+
+TECH CONSTRAINTS
+- Migration filename: 20260502120600_rls_corrections.sql (timestamp continues from previous batch)
+- All policies named with table-suffix-free names (tenant_isolation, service_role_bypass) — Supabase requires unique names per table not globally
+- Use `for all to service_role` syntax (not `for select to service_role` — workers need full CRUD)
+- Comments above each section explaining what it does and why
+
+ACCEPTANCE
+1. File exists at supabase/migrations/20260502120600_rls_corrections.sql
+2. grep -c "create policy service_role_bypass" returns 17 (or 18 if refunds was missing — verify)
+3. grep -c "alter table" returns 2 (order_items + refunds)
+4. grep -c "tenant_id_idx" returns 2 (order_items + refunds indexes)
+5. README updated with migration 0007 entry in decision history
+6. git log --oneline -1 shows the exact commit message
+7. git status clean
+
+HARD STOP
+Stop after scope. Report:
+- Whether refunds had RLS in batch 1 (affects section A count)
+- Total policies added (17 or 18)
+- Any issues with re-creating policies (drop then create pattern)
+- Confirm migrations 0001-0006 untouched (git diff should show only new file + README edit)
+
+Wait for next prompt.
