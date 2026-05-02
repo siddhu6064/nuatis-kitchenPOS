@@ -1,0 +1,165 @@
+▶ PROMPT [Phase 0 · Batch 5 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-4 complete: 8 migrations applied locally (multi-tenant + RLS + service_role bypass + password column), pos-api Express ESM TS scaffolded with /v1/health and /v1/auth (sign-in + pin), pos-shared workspace with Zod schemas for auth + staff + common. Now: full menu CRUD on the API. The tablet POS (currently the throwaway prototype with 12 hardcoded items) will eventually consume these endpoints. No admin web UI yet — driving by curl/test for now. Also convert pos-shared to a composite TypeScript project for better cross-package builds.
+
+GOAL
+Working menu CRUD: an authenticated owner/manager can create/read/update/delete categories, items, modifier groups, and modifier options for their tenant. Cashier (terminal JWT) can read but not write. Tested end-to-end with vitest integration tests against a local Supabase (skipped gracefully when env unset).
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schemas + composite project
+═══════════════════════════════════════
+
+1. Add packages/pos-shared/src/menu.ts:
+   - MenuCategorySchema = z.object({ id: z.string().uuid(), tenant_id: z.string().uuid(), name: z.string().min(1).max(100), sort_order: z.number().int().nonnegative(), deleted_at: z.string().datetime().nullable(), created_at: z.string().datetime() })
+   - MenuItemSchema = z.object({ id, tenant_id, category_id: z.string().uuid(), name: z.string().min(1).max(120), price_cents: z.number().int().nonnegative().max(1000000), taxable: z.boolean(), image_url: z.string().url().nullable(), kitchen_station: z.string().nullable(), deleted_at, created_at })
+   - ModifierGroupSchema = z.object({ id, tenant_id, name, min_select: z.number().int().min(0), max_select: z.number().int().min(1), required: z.boolean(), deleted_at, created_at })
+   - ModifierOptionSchema = z.object({ id, group_id: z.string().uuid(), name, price_delta_cents: z.number().int(), sort_order: z.number().int().nonnegative() })
+   - MenuItemModifierGroupSchema = z.object({ item_id: z.string().uuid(), group_id: z.string().uuid(), sort_order: z.number().int().nonnegative() })
+   - Create*Request and Update*Request variants (omit id, tenant_id, created_at, deleted_at; partial for updates)
+   - MenuTreeResponseSchema = z.object({ categories: z.array(MenuCategorySchema.extend({ items: z.array(MenuItemSchema.extend({ modifier_groups: z.array(ModifierGroupSchema.extend({ options: z.array(ModifierOptionSchema) })) })) })) })
+   - Export Inferred types: MenuCategory, MenuItem, ModifierGroup, ModifierOption, etc.
+   - Re-export from packages/pos-shared/src/index.ts
+
+2. Convert packages/pos-shared to composite TypeScript project:
+   - tsconfig.json: add "composite": true, "incremental": true under compilerOptions
+   - Ensure declaration: true and declarationMap: true (already set, verify)
+   - Outputs go to dist/, .tsbuildinfo allowed in dist/
+
+3. Create root tsconfig.json (if not present) with project references:
+   - { "files": [], "references": [{ "path": "./packages/pos-shared" }, { "path": "./apps/pos-api" }] }
+   - apps/pos-api/tsconfig.json: add "composite": true and "references": [{ "path": "../../packages/pos-shared" }]
+
+4. Verify root pnpm script "typecheck" runs tsc -b (build mode) across the project graph; add if missing.
+
+═══════════════════════════════════════
+SECTION 2 — pos-api menu routes
+═══════════════════════════════════════
+
+5. apps/pos-api/src/lib/db.ts (new helper, or add to existing supabase.ts):
+   - Helper functions for tenant-scoped queries that always inject tenant_id from req.auth
+   - Example: tenantQuery(req, 'menu_items') returns a query builder pre-filtered by tenant_id
+   - This prevents accidental cross-tenant reads even though service_role bypasses RLS
+
+6. apps/pos-api/src/middleware/role-guard.ts:
+   - requireRole(['owner', 'manager']) — middleware that 403s if req.auth.role not in allowed list
+   - For terminal JWT (kind: 'terminal'), role is always 'cashier', so this naturally restricts terminal sessions to read-only menu routes
+
+7. apps/pos-api/src/routes/menu/categories.ts:
+   - GET /v1/menu/categories — any auth (session OR terminal); returns active (deleted_at IS NULL) categories for tenant, sorted by sort_order
+   - POST /v1/menu/categories — owner+manager only; body = CreateMenuCategoryRequest; inserts with tenant_id from JWT, returns created row
+   - PATCH /v1/menu/categories/:id — owner+manager; tenant-scoped UPDATE; returns updated row; 404 if not found in tenant
+   - DELETE /v1/menu/categories/:id — owner+manager; soft delete (set deleted_at); returns 204
+
+8. apps/pos-api/src/routes/menu/items.ts:
+   - GET /v1/menu/items — any auth; query params: category_id (optional filter), include_deleted (owner+manager only); returns array
+   - POST /v1/menu/items — owner+manager; validates category_id belongs to tenant before insert; returns created
+   - PATCH /v1/menu/items/:id — owner+manager
+   - DELETE /v1/menu/items/:id — owner+manager; soft delete
+
+9. apps/pos-api/src/routes/menu/modifier-groups.ts:
+   - GET /v1/menu/modifier-groups — any auth; returns groups + their options (one query with join, returned nested)
+   - POST /v1/menu/modifier-groups — owner+manager
+   - PATCH /v1/menu/modifier-groups/:id — owner+manager
+   - DELETE /v1/menu/modifier-groups/:id — owner+manager; soft delete
+
+10. apps/pos-api/src/routes/menu/modifier-options.ts:
+    - POST /v1/menu/modifier-options — owner+manager; body includes group_id; verify group belongs to tenant before insert
+    - PATCH /v1/menu/modifier-options/:id — owner+manager
+    - DELETE /v1/menu/modifier-options/:id — owner+manager; HARD delete (no soft delete on options — they're cheap to recreate, no historical orders reference them directly since modifiers are stored as JSON snapshots on order_items)
+
+11. apps/pos-api/src/routes/menu/links.ts:
+    - POST /v1/menu/items/:item_id/modifier-groups — owner+manager; body: { group_id, sort_order }; inserts into menu_item_modifier_groups; verify both belong to tenant
+    - DELETE /v1/menu/items/:item_id/modifier-groups/:group_id — owner+manager
+
+12. apps/pos-api/src/routes/menu/tree.ts:
+    - GET /v1/menu/tree — any auth; returns full nested menu tree (categories → items → modifier groups → options) for the cashier app to consume in one call
+    - Single endpoint that powers the terminal's offline-cache priming
+    - Excludes deleted items
+    - Response shape matches MenuTreeResponseSchema
+
+13. Mount all menu routers under /v1/menu in apps/pos-api/src/index.ts.
+
+14. Every route uses the requireAuth middleware (from Batch 4) plus, where applicable, requireRole.
+
+15. Every mutation logs to audit_log: action like 'menu_item_created', target_type 'menu_item', target_id, payload: snapshot of the change.
+
+═══════════════════════════════════════
+SECTION 3 — Tests
+═══════════════════════════════════════
+
+16. apps/pos-api/src/routes/menu/menu.test.ts:
+    - Skip if no SUPABASE_URL (same pattern as auth tests)
+    - Setup: sign in as demo owner via /v1/auth/sign-in to get JWT
+    - GET /v1/menu/tree returns the seeded data (12 items, 3 modifier groups, 6 drinks linked)
+    - POST a new category → returns 201 + body, then GET shows it
+    - POST item without category_id → 400
+    - POST item with category_id from another tenant → 404 (tenant scoping verified)
+    - PATCH item updates name + price → returns updated row
+    - DELETE item soft-deletes → GET excludes it by default, GET with include_deleted=true includes it
+    - Cashier (terminal JWT) can GET /v1/menu/tree, cannot POST a category (403)
+    - POST without auth → 401
+
+17. apps/pos-api/src/lib/db.test.ts:
+    - Unit tests for the tenantQuery helper — verify it injects the right tenant_id
+
+═══════════════════════════════════════
+SECTION 4 — Smoke + commit
+═══════════════════════════════════════
+
+18. From root: pnpm install, pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (integration tests skip without env).
+
+19. Commit + push:
+    - git add .
+    - git commit -m "feat(api): /v1/menu CRUD (categories, items, modifiers, tree) + composite ts project"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add image upload / Supabase Storage integration — image_url is a plain text column for now; admin will paste URLs later
+- Do NOT add bulk import (CSV upload, etc.) — manual CRUD only
+- Do NOT add the "Generate starter menu" seed endpoint — defer; seed.sql handles that for demo tenant already
+- Do NOT add /v1/menu/seed — defer to Batch 7
+- Do NOT add menu versioning or change history beyond audit_log entries
+- Do NOT add /v1/orders, /v1/payments, /v1/staff endpoints — Batch 6+
+- Do NOT scaffold pos-admin Next.js app
+- Do NOT add CORS middleware
+- Do NOT touch artifacts/ folder
+- Do NOT add pagination to GET endpoints — menu sizes are small, return everything for tenant
+- Do NOT add full-text search
+
+TECH CONSTRAINTS
+- All request bodies validated via Zod schemas from pos-shared (never inline)
+- All responses shape-validated in dev (use Zod .parse on response in test mode; production can skip for perf)
+- Soft deletes use deleted_at timestamp; never hard-delete categories/items/groups (they're referenced by historical orders)
+- Modifier options CAN be hard-deleted (not historically referenced)
+- Every DB query injects tenant_id from req.auth.tenant_id (never trust body or query params for tenant)
+- Use Supabase JS client v2 query builders, not raw SQL
+- Audit log entries are fire-and-forget (don't block response if audit insert fails — log warning instead)
+- Workspace path imports use 'workspace:*'
+
+ACCEPTANCE
+1. packages/pos-shared composite build succeeds (pnpm -F @nuatis/pos-shared build)
+2. pnpm -F @nuatis/pos-api typecheck → 0 errors
+3. Vitest unit tests pass (db.test.ts and any route-level pure unit tests)
+4. Vitest integration tests skip cleanly when SUPABASE_URL unset
+5. All menu routes have at least one happy-path test
+6. Auth + role guards verified — terminal JWT cannot POST/PATCH/DELETE
+7. Tenant isolation verified — POSTing with category_id from another tenant returns 404
+8. Audit log entries created on every mutation (verify with one test that asserts an audit row exists post-POST)
+9. /v1/menu/tree returns nested structure matching MenuTreeResponseSchema
+10. Root tsconfig.json has project references; pnpm typecheck (build mode) succeeds across workspace
+11. git status clean post-commit
+12. git log --oneline -1 matches the spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Test counts (pass / skip / fail)
+- Total LOC added (rough — git diff --stat)
+- Any TS strict-mode workarounds (especially around Supabase JS types — they have known quirks)
+- Confirm migrations 0001-0008 untouched (no new migrations this batch)
+- Confirm artifacts/ untouched
+- Open questions for Batch 6 (orders endpoints — POST /v1/orders, item add, send-to-kitchen, payment-intent creation; AND/OR scaffold pos-admin Next.js for menu management UI)
+
+Wait for next prompt.

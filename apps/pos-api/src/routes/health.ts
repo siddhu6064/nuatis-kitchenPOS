@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -11,7 +11,7 @@ const pkg = JSON.parse(
 
 const startedAt = Date.now();
 
-export const healthRouter = Router();
+export const healthRouter: IRouter = Router();
 
 healthRouter.get("/health", async (_req: Request, res: Response) => {
   const client = getSupabaseClient();

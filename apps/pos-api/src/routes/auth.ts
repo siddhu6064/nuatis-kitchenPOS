@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import {
   SignInRequestSchema,
   PinRequestSchema,
@@ -9,7 +9,7 @@ import { signSessionJwt, signTerminalJwt } from "../lib/jwt.js";
 import { verifyPassword, verifyPin } from "../lib/passwords.js";
 import { logger } from "../lib/logger.js";
 
-export const authRouter = Router();
+export const authRouter: IRouter = Router();
 
 // ---------------------------------------------------------------------------
 // Helpers
