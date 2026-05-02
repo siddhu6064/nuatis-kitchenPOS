@@ -1,0 +1,41 @@
+BUILT
+
+Fonts — Lora (500, 600), Inter (400, 500, 600), JetBrains Mono (400, 500) loaded via Google Fonts in index.html. Registered as --font-serif, --font-sans, --font-mono in the Tailwind @theme block.
+
+Brand color — --color-brand: #0047FF registered in @theme inline, making bg-brand, text-brand, ring-brand available as Tailwind utilities everywhere.
+
+Amber → blue sweep — All primary interactive buttons (Charge, Tap to Pay, Confirm Tip, New Order on receipt, Custom tip keypad confirm, qty + increment, item-count pill) converted from amber/orange to #0047FF. Approved screen keeps emerald-600 exclusively.
+
+Header — Slimmed to 56px (h-14). "Nuatis POS" wordmark now in font-serif (Lora). "· Cafe" in font-mono small caps gray. Item-count pill in bg-brand. DEMO badge top-right in JetBrains Mono, brand-outline style.
+
+Menu tiles — rounded-lg (8px), shadow-sm base, hover:shadow-md hover:-translate-y-0.5, active:scale-95 active:translate-y-0. Item names in font-medium. Prices in tabular-nums.
+
+Cart sidebar — Hairline divide-y divide-slate-100 between line items instead of full borders. Totals block has pt-5 for breathing room. + button in brand blue.
+
+Checkout overlay tip presets — Selected state: solid bg-brand text-white fill (was amber). Unselected unchanged. All $ amounts in tabular-nums.
+
+Tap to Pay screen — Grand total at top in font-serif text-5xl before the animation. Pulse rings and card icon in brand blue (bg-brand), higher contrast shadow (shadow-blue-900/40).
+
+Approved screen — Unchanged (emerald only, as required).
+
+Favicon — Custom "N" SVG: blue #0047FF rounded square with white serif N lettermark.
+
+Page title — Nuatis POS · Cafe Demo
+
+README.md — Written at repo root with exact content from spec: prototype disclaimer, what it demonstrates, production build note, "Built by Siddhu · Nuatis LLC" footer.
+
+SKIPPED (per scope) — Dark mode, mobile layout, new features, animations beyond existing
+
+ERRORS — None (all HMR applied clean, zero console errors)
+
+GIT — run these in the Shell tab to complete the push:
+
+git add .
+git commit -m "feat(batch-5): visual polish and README disclaimer"
+git push origin main
+
+Note: git push requires a GitHub remote to be configured. If origin doesn't exist yet, first run:
+git remote add origin https://github.com/siddhu6064/nuatis-kitchenPOS.git
+then run the three commands above.
+
+All changes are staged and ready. Prototype is complete — Batches 1–5 shipped.
