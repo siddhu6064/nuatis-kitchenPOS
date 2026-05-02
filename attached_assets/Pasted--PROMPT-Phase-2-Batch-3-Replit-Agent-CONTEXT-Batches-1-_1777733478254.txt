@@ -1,0 +1,81 @@
+▶ PROMPT [Phase 2 · Batch 3 · Replit Agent]
+
+CONTEXT
+Batches 1–2 shipped: auth, cafe menu, tap-to-add cart with qty controls and
+remove, live totals, localStorage persistence. Now: mock checkout flow that
+walks the cashier from cart → tip → payment → approved state. All payments
+are simulated — no Stripe, no network. The point is validating the UX
+sequence and timing on a tablet.
+Repo: github.com/siddhu6064/nuatis-kitchenPOS.
+
+GOAL
+Cashier taps "Charge" in the cart, walks through tip selection and a mock
+card-tap screen, and lands on a green "Approved" confirmation with the final
+total — all in under 10 seconds of taps.
+
+SCOPE — BUILD THIS
+1. "Charge $XX.XX" primary button at bottom of cart sidebar, full-width,
+     disabled when cart is empty, shows current grand total
+2. Tapping Charge opens a fullscreen checkout overlay (covers menu + cart),
+     not a modal — uses real screen estate, easier on tablet
+3. Checkout overlay layout: order summary at top (line items, subtotal, tax),
+     tip section in middle, total + action buttons at bottom
+4. Tip presets — four buttons: 15%, 18%, 20%, Custom. Default selection: 18%.
+     Tip calculated on pre-tax subtotal, displayed as both $ amount and %
+5. Custom tip — opens a numeric keypad overlay, user enters $ amount, confirm
+     returns to checkout overlay with custom value selected
+6. "No tip" option as a small text link below the preset row
+7. Live total recalc — grand total at bottom updates instantly as tip changes
+     (subtotal + tax + tip)
+8. Two action buttons at bottom: "Back to cart" (secondary) and "Tap to Pay
+     $XX.XX" (primary, full-width on mobile, large on tablet)
+9. Tap-to-Pay screen — fullscreen, centered. Shows large total, animated
+     pulse/wave indicator, copy: "Present card to reader" and a small
+     "Cancel" link. After 2.5 seconds auto-resolves to Approved state
+     (mock — no real reader interaction)
+10. Approved screen — fullscreen, green background or accent, large checkmark,
+     "Approved" headline, total + tip breakdown, two buttons: "New Order"
+     (primary, clears cart and returns to menu) and "View Receipt" (secondary,
+     stub — logs "receipt view requested" to console for now, Batch 4 builds it)
+11. State machine for checkout: cart → tip-select → tap-to-pay → approved.
+     Back button on tip-select returns to cart with tip state preserved.
+     Cancel on tap-to-pay returns to tip-select.
+12. Persist last completed order to localStorage under key
+     `nuatis_pos_last_order_v1` — { items, subtotal, tax, tip, total,
+     timestamp } — Batch 4 receipt will read from this
+
+SCOPE — DO NOT BUILD
+- Receipt screen UI (Batch 4 — stub the button, persist order data only)
+- Real Stripe Terminal integration
+- Email/SMS receipt sending
+- Payment method selection (card / cash) — assume card-tap only this batch
+- Split check
+- Order history list
+- Refund flow
+
+TECH CONSTRAINTS
+- Stay on React + Vite, Tailwind v3, lucide-react
+- Single accent green for approved state, e.g. emerald-500
+- Tip math: round to 2 decimals, store cents-safe (multiply by 100, integer
+     ops, divide back) to avoid float drift on totals
+- Keypad overlay must accept decimal input, max $999.99, sane validation
+- No setTimeout cleanup leaks — clear timer if user navigates away from
+     tap-to-pay screen mid-countdown
+
+ACCEPTANCE
+- Charge button shows correct total, disabled at cart empty
+- Tip presets compute correctly: 18% of $20.00 subtotal = $3.60
+- Custom tip keypad accepts $X.XX, validates, returns to checkout
+- Total at bottom of checkout = subtotal + tax + tip, updates live
+- Tap-to-Pay auto-advances to Approved after ~2.5s
+- Cancel mid-payment returns to tip-select with state intact
+- Approved screen displays all totals correctly
+- "New Order" clears cart, clears tip selection, returns to menu shell
+- localStorage `nuatis_pos_last_order_v1` populated correctly after approval
+- Back from tip-select preserves tip choice on return
+- Flow works end-to-end on a 1024×768 viewport without scroll-trapping
+- All buttons ≥44×44px, ARIA labels on icon-only buttons
+
+HARD STOP
+Stop after scope. Report built / errors / skipped / open questions.
+Do NOT start receipt screen UI (Batch 4). Wait for next prompt.

@@ -1,5 +1,6 @@
 import { Plus, Minus, X } from "lucide-react";
 import type { CartLine, CartTotals } from "@/hooks/useCart";
+import { fmt } from "@/lib/tipMath";
 
 interface Props {
   lines: CartLine[];
@@ -8,13 +9,10 @@ interface Props {
   onDecrement: (id: string) => void;
   onRemove: (id: string) => void;
   onClear: () => void;
+  onCharge: () => void;
 }
 
-function fmt(n: number) {
-  return n.toFixed(2);
-}
-
-export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove, onClear }: Props) {
+export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove, onClear, onCharge }: Props) {
   const isEmpty = lines.length === 0;
 
   return (
@@ -41,7 +39,6 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                 key={item.id}
                 className="relative flex items-center gap-3 py-3 border-b border-slate-50 last:border-0"
               >
-                {/* Remove X — top-right, 44×44 tap target */}
                 <button
                   onClick={() => onRemove(item.id)}
                   aria-label={`Remove ${item.name} from order`}
@@ -55,15 +52,12 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                   <X size={15} strokeWidth={2.5} />
                 </button>
 
-                {/* Item info */}
                 <div className="flex-1 min-w-0 pr-8">
                   <p className="text-slate-800 text-sm font-semibold leading-tight truncate">{item.name}</p>
                   <p className="text-slate-400 text-xs mt-0.5">${fmt(item.price)} each</p>
                 </div>
 
-                {/* Qty controls + line total */}
                 <div className="flex items-center gap-2 shrink-0">
-                  {/* − button */}
                   <button
                     onClick={() => onDecrement(item.id)}
                     aria-label={qty === 1 ? `Remove ${item.name}` : `Decrease quantity of ${item.name}`}
@@ -81,7 +75,6 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                     {qty}
                   </span>
 
-                  {/* + button */}
                   <button
                     onClick={() => onIncrement(item.id)}
                     aria-label={`Increase quantity of ${item.name}`}
@@ -95,7 +88,6 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
                     <Plus size={14} strokeWidth={2.5} />
                   </button>
 
-                  {/* Line total */}
                   <span className="w-14 text-right text-sm font-bold text-slate-800 tabular-nums">
                     ${fmt(item.price * qty)}
                   </span>
@@ -120,11 +112,26 @@ export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove,
           <span className="tabular-nums">${fmt(totals.grandTotal)}</span>
         </div>
 
+        {/* Charge button */}
+        <button
+          onClick={onCharge}
+          disabled={isEmpty}
+          className="
+            w-full mt-2 py-3.5 rounded-xl text-sm font-semibold
+            bg-amber-500 text-white
+            hover:bg-amber-600 active:bg-amber-700
+            disabled:opacity-40 disabled:cursor-not-allowed
+            transition-colors duration-100
+          "
+        >
+          {isEmpty ? "Charge" : `Charge $${fmt(totals.grandTotal)}`}
+        </button>
+
         <button
           onClick={onClear}
           disabled={isEmpty}
           className="
-            w-full mt-3 py-2.5 rounded-lg text-sm font-medium
+            w-full py-2.5 rounded-lg text-sm font-medium
             border border-slate-200 text-slate-600
             hover:bg-slate-50 active:bg-slate-100
             disabled:opacity-40 disabled:cursor-not-allowed
