@@ -1,0 +1,61 @@
+▶ PROMPT [Phase 2 · Batch 1 · Replit Agent]
+
+CONTEXT
+First "main code" batch for Nuatis POS prototype. Skipping pre-flight setup —
+go straight to scaffolding + first demo-able slice. This is a throwaway UX
+prototype: cafe vertical only, localStorage state, mock payments, no backend.
+Goal of prototype day is validating tablet POS flows, not architecture.
+Repo: github.com/siddhu6064/nuatis-pos.
+
+GOAL
+After login, user sees a cafe menu grid and can tap items to build an order
+in a cart sidebar that shows live totals.
+
+SCOPE — BUILD THIS
+1. Next.js 14 App Router project, TypeScript, Tailwind v3
+2. Integrate Replit Auth — gate the entire app, redirect unauth'd users to login
+3. Header: "Nuatis POS · Cafe" left, signed-in user name + Logout button right
+4. Two-column layout below header (tablet/desktop landscape optimized):
+     left = menu grid (3 cols × 4 rows, 12 items), right = cart sidebar (~360px)
+5. Hardcode 12 cafe menu items in a single TS file (id, name, price, category):
+     Espresso 3.50, Americano 4.00, Latte 5.00, Cappuccino 4.75,
+     Cold Brew 5.25, Matcha Latte 5.50, Chai Latte 5.00, Hot Chocolate 4.50,
+     Croissant 3.75, Blueberry Muffin 3.50, Avocado Toast 9.50, Chicken Sandwich 11.00
+6. Each menu tile: name, price, soft category color, large tap target (~140px tall)
+7. Tap a tile → adds 1 unit to cart. Tapping again increments qty.
+8. Cart sidebar shows: line items (name, qty, line total), subtotal, tax (8.25%),
+     grand total. Empty state: "No items yet — tap to start an order."
+9. Cart persists to localStorage under key `nuatis_pos_cart_v1`
+10. "Clear cart" button at bottom of sidebar
+
+SCOPE — DO NOT BUILD
+- Checkout / payment flow (Batch 3)
+- Tip selection (Batch 3)
+- Receipt screen (Batch 4)
+- Qty +/- controls or remove-line buttons (Batch 2)
+- Modifiers, item details, search, categories filter
+- Real Stripe, real backend, Supabase, multi-tenant logic
+- Custom auth — use Replit Auth as-is
+
+TECH CONSTRAINTS
+- Next.js 14 App Router (not Pages Router)
+- TypeScript strict mode
+- Tailwind v3, not v4
+- Replit Auth via Replit's official integration template
+- React state + localStorage only, no Zustand/Redux/Jotai
+- System font stack, neutral palette (slate/zinc), single accent color
+
+ACCEPTANCE
+- `npm run dev` starts cleanly with no errors
+- Visiting `/` while logged out → Replit Auth login screen
+- After login → POS shell visible with header + 2-col layout
+- All 12 menu items render in the grid with correct prices
+- Tapping a tile adds to cart sidebar; tapping again increments qty
+- Subtotal, tax (8.25%), grand total math is correct to 2 decimals
+- Refreshing the page preserves cart contents (localStorage)
+- Clear cart empties the sidebar back to empty state
+- Logout returns to login screen
+
+HARD STOP
+Stop after scope. Report: built items, errors, skipped items, open questions.
+Do NOT start cart polish (Batch 2) or checkout (Batch 3). Wait for next prompt.
