@@ -11,6 +11,8 @@ import {
   Receipt,
   Settings,
 } from "lucide-react";
+import { LocationSwitcher } from "@/components/location-switcher";
+import { listLocations } from "@/lib/api/orders";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -31,6 +33,14 @@ export async function DashboardShell({
   const session = await auth();
   const tenantName = session?.user?.name ?? "Your Business";
   const tenantRole = session?.user?.role ?? "owner";
+  const posJwt = session?.user?.posJwt ?? "";
+
+  let locations: { id: string; name: string }[] = [];
+  try {
+    locations = await listLocations(posJwt);
+  } catch {
+    // ok — location switcher shows fallback
+  }
 
   return (
     <div className="flex min-h-screen">
@@ -75,10 +85,7 @@ export async function DashboardShell({
       <div className="flex flex-col flex-1 ml-60">
         {/* Top bar */}
         <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-slate-200 bg-white/80 backdrop-blur-sm px-6">
-          <div className="text-sm text-slate-500">
-            {/* Location switcher placeholder */}
-            <span className="font-medium text-slate-700">Main Location</span>
-          </div>
+          <LocationSwitcher locations={locations} />
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-600">
               {session?.user?.email ?? ""}

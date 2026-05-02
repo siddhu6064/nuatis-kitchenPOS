@@ -6,6 +6,7 @@ import { checkoutRouter } from "./checkout.js";
 import { paymentsRouter } from "./payments.js";
 import { voidRouter } from "./void.js";
 import { receiptSendRouter } from "../receipts/index.js";
+import { auditTrailRouter } from "./audit-trail.js";
 
 const ordersBarrel: IRouter = Router();
 
@@ -19,5 +20,6 @@ ordersBarrel.use("/:id/checkout", checkoutRouter);
 ordersBarrel.use("/:id/payments", paymentsRouter);
 ordersBarrel.use("/:id/void", voidRouter);
 ordersBarrel.use("/:id/receipts", receiptSendRouter);
+ordersBarrel.use("/:id/audit-trail", auditTrailRouter);
 
 export { ordersBarrel as ordersRouter };

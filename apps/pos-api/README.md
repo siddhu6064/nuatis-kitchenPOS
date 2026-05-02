@@ -59,6 +59,8 @@ Once `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set:
 | GET | `/v1/reports/end-of-day` | Session (owner/manager) | End-of-day report for a date (`?date=YYYY-MM-DD`) |
 | GET | `/v1/reports/end-of-day.csv` | Session (owner/manager) | CSV export of end-of-day report |
 | GET | `/v1/reports/daily-history` | Session (owner/manager) | List daily snapshots (`?limit=30`, max 90) |
+| GET | `/v1/orders/:id/audit-trail` | Session (owner/manager) | Audit log entries for a specific order |
+| GET | `/v1/locations` | Session | All locations for the authenticated tenant |
 
 ## Reports Architecture
 

@@ -1,38 +1,52 @@
+import { auth } from "@/auth";
 import { DashboardShell } from "@/components/dashboard-shell";
-import { ShoppingCart } from "lucide-react";
+import { OrdersList } from "@/components/orders/OrdersList";
+import { listOrders, listLocations } from "@/lib/api/orders";
+import { apiGet } from "@/lib/api-client";
+import type { Order } from "@nuatis/pos-shared";
 
-export default function OrdersPage() {
+export default async function OrdersPage() {
+  const session = await auth();
+  const posJwt = session?.user?.posJwt ?? "";
+
+  let initialOrders: Order[] = [];
+  let locationId: string | undefined;
+
+  try {
+    const locations = await listLocations(posJwt);
+    locationId = locations[0]?.id;
+    if (locationId) {
+      initialOrders = await listOrders(posJwt, {
+        location_id: locationId,
+        limit: 100,
+      });
+    } else {
+      initialOrders = await listOrders(posJwt, { limit: 100 });
+    }
+  } catch {
+    // Render with empty list — client will retry
+  }
+
+  void apiGet; // suppress unused import lint
+
   return (
     <DashboardShell>
-      <div className="max-w-5xl mx-auto">
-        <h1 className="font-serif text-3xl font-bold text-slate-900 mb-2">Orders</h1>
-        <ComingSoon
-          icon={<ShoppingCart className="h-12 w-12 text-slate-300" />}
-          title="Orders management coming soon"
-          description="This screen will show all open and completed orders, with real-time status updates from the kitchen display system."
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div>
+          <h1 className="font-serif text-3xl font-bold text-slate-900">
+            Orders
+          </h1>
+          <p className="mt-1 text-slate-500 text-sm">
+            Active orders auto-refresh every 10 seconds.
+          </p>
+        </div>
+
+        <OrdersList
+          initialOrders={initialOrders}
+          posJwt={posJwt}
+          locationId={locationId}
         />
       </div>
     </DashboardShell>
-  );
-}
-
-function ComingSoon({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mt-12 flex flex-col items-center justify-center text-center gap-4 py-16 rounded-2xl border-2 border-dashed border-slate-200">
-      {icon}
-      <h2 className="font-serif text-xl font-semibold text-slate-700">{title}</h2>
-      <p className="max-w-sm text-sm text-slate-400 leading-relaxed">{description}</p>
-      <span className="mt-2 inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-medium text-amber-700">
-        Coming in Batch 14
-      </span>
-    </div>
   );
 }

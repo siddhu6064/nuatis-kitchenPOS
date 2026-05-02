@@ -1,0 +1,204 @@
+▶ PROMPT [Phase 0 · Batch 14 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-13 complete. Admin app scaffolded with sign-up, sign-in, dashboard shell, menu management. Six placeholder pages (orders, cash, reports, staff, receipts, settings) currently render "Coming soon." This batch wires up the orders + cash drawer admin screens against the existing /v1/orders and /v1/cash endpoints. NO reports page (Batch 15). NO staff/receipts/settings (Batch 16-17).
+
+GOAL
+Working admin Orders + Cash screens. Owner navigates to /orders, sees a list of all orders with active/history toggle, can drill into any order to see line items + payment + audit trail, can void via slide-out drawer. Owner navigates to /cash, sees current open shift with running totals + event timeline, can manually log pay_in/pay_out/no_sale (with manager PIN) and close the shift.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — Orders admin page
+═══════════════════════════════════════
+
+1. apps/pos-admin/src/app/orders/page.tsx — replace placeholder; server component:
+   - Fetches /v1/orders?location_id={selected}&limit=50 via api-client
+   - Renders client component <OrdersList initialOrders={orders} />
+
+2. apps/pos-admin/src/components/orders/OrdersList.tsx (client):
+   - Tabs: "Active" (status in [open, fired]) | "Today" (paid/voided today) | "History" (paid/voided before today)
+   - Tab-aware filter applied to list
+   - Each row: order #, opened_at relative time, status badge (color-coded), staff name, item count, total (tabular-nums)
+   - Click row → opens slide-out drawer (Radix Dialog with right-side positioning)
+   - React Query auto-refetch every 10s when "Active" tab is selected; manual refetch button on other tabs
+   - Empty state per tab with appropriate copy
+
+3. apps/pos-admin/src/components/orders/OrderDrawer.tsx (client):
+   - Slide-out from right, ~480px wide
+   - Header: order # + status badge + opened/closed timestamps
+   - Sections:
+     * Items: each line with qty × name, modifiers in sub-text, price (tabular-nums); voided items struck through
+     * Payment: method, amount, tip, total, last4 if card; refunds linked below
+     * Audit trail: collapsible — list of audit_log entries for this order_id
+     * Actions: "Void Order" button (only visible if status='open' or 'fired'); "Print Receipt" button (placeholder — wire when print is real); "Resend Email Receipt" button if order has email_messages row
+   - Void flow: opens confirmation modal, requires reason field, calls POST /v1/orders/:id/void with body { reason }
+     * Cashier session would 401; owner session works directly
+     * Note: even owner sessions can use the manager_pin override pattern if there's a UX reason; this batch uses session-only
+
+4. Add api-client wrappers in apps/pos-admin/src/lib/api/orders.ts:
+   - listOrders(params)
+   - getOrder(id) — fetches single order with items + payment + audit trail
+   - voidOrder(id, reason)
+   - resendReceipt(orderId, channel) — calls /v1/orders/:id/receipts with stored email/phone (looks up from contact)
+
+5. NEW pos-api endpoint needed: GET /v1/orders/:id/audit-trail — returns audit_log entries where target_type='order' AND target_id=:id, scoped to tenant. Add as small route file in pos-api.
+
+═══════════════════════════════════════
+SECTION 2 — Cash drawer admin page
+═══════════════════════════════════════
+
+6. apps/pos-admin/src/app/cash/page.tsx — replace placeholder; server component:
+   - Fetches GET /v1/cash/sessions/current?location_id={selected}
+   - If 404: render <NoCashSession /> empty state with "Start a shift via the cashier terminal" message
+   - If session exists: render <CashSessionView session={session} />
+
+7. apps/pos-admin/src/components/cash/CashSessionView.tsx (client):
+   - Header: shift opened by {staff name}, since {opened_at relative}, opening float ${X.XX}
+   - Live running total (recomputes from events + opening float every 10s):
+     * Cash sales: +$X.XX
+     * Cash refunds: −$X.XX
+     * Pay-ins: +$X.XX
+     * Pay-outs: −$X.XX
+     * Expected total: $Y.YY
+   - Event timeline: list of cash_events for this session, newest first, each row: time + type badge + amount + reason + staff name
+   - Actions:
+     * "Add cash event" button → opens dialog with type dropdown (pay_in, pay_out, no_sale), amount, reason
+       - Submitting pay_out or no_sale triggers manager PIN modal first
+       - On success: refetch session
+     * "Close shift" button → opens confirmation modal asking for closing actual amount (cents → dollars input)
+       - Compares to expected, shows variance
+       - Confirms → calls POST /v1/cash/sessions/:id/close
+
+8. apps/pos-admin/src/components/cash/CashEventDialog.tsx (client):
+   - Form: type select, amount in dollars, reason text
+   - On submit: POST /v1/cash/sessions/:id/events
+   - If 403 manager_pin_required: show ManagerPinModal, retry with manager_pin in body
+
+9. apps/pos-admin/src/components/cash/ManagerPinModal.tsx (reusable):
+   - 4-digit PIN input with auto-focus and large tap targets
+   - On submit: returns the entered PIN to caller (caller adds to API request body)
+   - Triggered by 403 manager_pin_required from any API call
+   - Note: this component is reusable for void/refund flows too
+
+10. apps/pos-admin/src/components/cash/CloseShiftDialog.tsx (client):
+    - Form: closing actual ($)
+    - Computes variance = closing_actual_cents - expected_cents inline
+    - Color-coded: green (variance == 0), yellow (|variance| ≤ $5), red (|variance| > $5)
+    - Confirm button only enabled when amount entered
+    - On submit: POST /v1/cash/sessions/:id/close → toast success, navigate to /cash showing closed-state empty page
+
+11. Add api-client wrappers in apps/pos-admin/src/lib/api/cash.ts:
+    - getCurrentSession(location_id)
+    - logCashEvent(sessionId, params, managerPin?)
+    - closeSession(sessionId, closingActualCents)
+
+═══════════════════════════════════════
+SECTION 3 — Dashboard summary cards (real data)
+═══════════════════════════════════════
+
+12. Update apps/pos-admin/src/app/page.tsx:
+    - Fetch in parallel:
+      * GET /v1/orders?status=open&limit=1 + ?status=fired&limit=1 (just to get counts via response array length — TODO: add a /v1/orders/stats endpoint later for proper counts, but for MVP this works at small scale)
+      * GET /v1/cash/sessions/current
+      * GET /v1/reports/end-of-day?date={today}
+    - Replace placeholder cards with real data:
+      * Today's Sales: gross_sales_cents from report, formatted as $X.XX
+      * Open Orders: count of orders with status='open' or 'fired'
+      * Cash Drawer: opening_float_cents + cash_sales - pay_outs from current session, or "No active shift"
+      * Tickets in Kitchen: count of orders with status='fired'
+    - Each card linked to its detail page
+
+13. Handle the case where any of the three calls 404 or 500 — show "—" with a warning icon and tooltip
+
+═══════════════════════════════════════
+SECTION 4 — Location switcher
+═══════════════════════════════════════
+
+14. The dashboard shell currently shows the tenant name but no location switcher. For multi-location tenants (post-MVP), we'll need this. For now:
+    - Add a location switcher dropdown in the header (just shows the default location for MVP since each tenant has 1 location)
+    - When tenant has multiple locations: dropdown lets owner switch active location; selection stored in sessionStorage as 'pos.active_location_id'
+    - All admin queries that take location_id read from this storage
+    - Default to tenant's first location on first load
+
+15. Add NEW pos-api endpoint: GET /v1/locations — session-only; returns array of locations for tenant.
+
+═══════════════════════════════════════
+SECTION 5 — Tests
+═══════════════════════════════════════
+
+16. apps/pos-api/src/routes/orders/audit-trail.test.ts:
+    - Skip-graceful integration: GET /v1/orders/:id/audit-trail returns audit log entries for that order
+    - Unit: rejects without auth (401), rejects cashier (403), returns 404 for cross-tenant order
+
+17. apps/pos-api/src/routes/locations/locations.test.ts:
+    - Skip-graceful integration: returns array of locations for tenant
+    - Unit: rejects without auth, returns empty array if tenant has no locations (shouldn't happen post-sign-up, but defensive)
+
+═══════════════════════════════════════
+SECTION 6 — Documentation + commit
+═══════════════════════════════════════
+
+18. apps/pos-admin/README.md — add to routes overview:
+    - /orders (active/today/history tabs, drill-down drawer, void flow)
+    - /cash (current shift view, manual events, close shift)
+    - Document the manager PIN modal pattern reusable across screens
+
+19. apps/pos-api/README.md routes table:
+    - GET /v1/orders/:id/audit-trail
+    - GET /v1/locations
+
+20. From root: pnpm install, pnpm -F @nuatis/pos-shared build, typecheck all three apps, run pos-api tests.
+
+21. Commit + push:
+    - git add .
+    - git commit -m "feat(admin): orders + cash drawer screens + audit trail + location switcher"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT build /reports page (Batch 15)
+- Do NOT build /staff, /receipts, /settings (Batch 16+)
+- Do NOT add real-time order updates via Supabase Realtime (10s polling for MVP; Realtime for KDS only this batch)
+- Do NOT add advanced filtering (date range, payment method, staff filter) — basic tabs only
+- Do NOT add bulk actions (bulk void, etc.)
+- Do NOT add print integration on admin (cashier prints only)
+- Do NOT add multi-location switcher logic for actually-multi-location tenants beyond the dropdown — assume 1 location for MVP
+- Do NOT modify existing tested endpoints (orders, cash) beyond the two new endpoints
+- Do NOT touch artifacts/, supabase/, prototype, or migrations
+
+TECH CONSTRAINTS
+- All admin → pos-api calls go through src/app/api/v1/[...path]/route.ts proxy (Batch 13 pattern)
+- React Query for client mutations + cache invalidation (refetch after every void/close/event)
+- Polling intervals: 10s for active orders, 10s for current cash session
+- Tabular-nums for all money displays
+- Manager PIN modal triggered by 403 manager_pin_required response code (Batch 10 contract)
+- Drawer/Dialog use Radix UI primitives consistently
+- Date/time formatting via date-fns with formatDistanceToNow for relative times
+- Express routers IRouter annotation (TS2742)
+- Workspace path imports use 'workspace:*'
+
+ACCEPTANCE
+1. /orders page renders with three tabs
+2. Click order row opens drawer with full details
+3. Void with reason works for owner; cashier 401's correctly
+4. /cash page renders open session with running total + event timeline
+5. Add cash event with pay_in works
+6. Add cash event with pay_out triggers manager PIN modal; correct PIN succeeds; wrong PIN shows error
+7. Close shift dialog computes variance correctly with color coding
+8. Dashboard summary cards show real numbers (or "—" with warning if API fails)
+9. Location switcher shows tenant's location(s)
+10. pnpm -F @nuatis/pos-admin typecheck → 0 errors
+11. pnpm -F @nuatis/pos-api typecheck → 0 errors  
+12. pnpm -F @nuatis/pos-api test → preserve baseline + new audit-trail/locations tests pass
+13. git status clean, commit pushed
+
+HARD STOP
+Stop after scope. Report:
+- File counts (admin app deltas, pos-api deltas)
+- Test counts (pass/skip/fail)
+- TS workarounds (especially around React Query 5 generic types and Radix Dialog positioning)
+- Confirm migrations 0001-0013 untouched
+- Confirm prototype + supabase/ untouched
+- Open questions for Batch 15 (reports admin page — date picker library choice: date-fns + custom or react-day-picker; CSV download via direct fetch with content-disposition or via signed URL; should the Insights/dashboard sparkline pull from /v1/reports/daily-history)
+
+Wait for next prompt.
