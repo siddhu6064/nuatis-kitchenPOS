@@ -188,8 +188,8 @@ export function ReceiptScreen({ order, onBackToApproved, onNewOrder }: Props) {
         <button
           onClick={onNewOrder}
           className="
-            flex-1 py-3 rounded-xl bg-amber-500 text-white text-sm font-semibold
-            hover:bg-amber-600 active:bg-amber-700 transition-colors duration-100
+            flex-1 py-3 rounded-xl bg-brand text-white text-sm font-semibold
+            hover:bg-blue-700 active:bg-blue-800 transition-colors duration-100
           "
         >
           New Order

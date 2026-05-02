@@ -72,8 +72,8 @@ export function TipKeypad({ value, onChange, onConfirm, onCancel }: Props) {
             disabled={!isValid}
             className="
               w-full py-3.5 rounded-xl text-sm font-semibold
-              bg-amber-500 text-white
-              hover:bg-amber-600 active:bg-amber-700
+              bg-brand text-white
+              hover:bg-blue-700 active:bg-blue-800
               disabled:opacity-40 disabled:cursor-not-allowed
               transition-colors duration-100
             "
