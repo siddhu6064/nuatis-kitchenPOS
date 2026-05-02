@@ -1,0 +1,237 @@
+▶ PROMPT [Phase 0 · Batch 4 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-3 complete: supabase migrations 0001-0007 (multi-tenant + RLS + service_role bypass), apps/pos-api Express ESM TS scaffold with /v1/health (port 3002). This batch adds: (a) packages/pos-shared workspace with Zod schemas + inferred TypeScript types, (b) JWT auth via `jose` with two token kinds (session 30d for owner/manager, terminal 4h for cashier PIN), (c) auth middleware on the API, (d) two real auth endpoints (POST /v1/auth/sign-in for email+password, POST /v1/auth/pin for cashier 4-digit PIN), (e) Vitest testing setup with first tests on the auth flow. NO admin web app yet (Batch 5). NO menu/order routes yet (Batch 6+).
+
+GOAL
+Working auth system: owner/manager can POST email+password and get a 30-day session JWT. Cashier can POST tenant_id + 4-digit PIN and get a 4-hour terminal JWT. Both JWTs verified by middleware. Tests pass. The seeded demo tenant (PIN 1234) can sign in.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — packages/pos-shared workspace
+═══════════════════════════════════════
+
+1. Create folder packages/pos-shared/ at repo root (sibling to apps/, supabase/).
+
+2. packages/pos-shared/package.json:
+   - name: "@nuatis/pos-shared", private: true, type: "module", version: "0.1.0"
+   - main: "./dist/index.js", types: "./dist/index.d.ts"
+   - exports: { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
+   - scripts: build (tsc), typecheck (tsc --noEmit), dev (tsc -w)
+   - dependencies: zod@^3.23
+   - devDependencies: typescript@^5.6
+
+3. packages/pos-shared/tsconfig.json:
+   - target ES2022, module NodeNext, moduleResolution NodeNext
+   - declaration true, declarationMap true, sourceMap true
+   - strict true, esModuleInterop true
+   - rootDir ./src, outDir ./dist
+
+4. packages/pos-shared/src/index.ts — re-export everything from sub-modules:
+   - export * from './auth.js'
+   - export * from './common.js'
+   - export * from './staff.js'
+
+5. packages/pos-shared/src/common.ts:
+   - VERTICALS const: ['restaurant', 'cafe', 'salon', 'spa', 'nail_bar', 'tattoo', 'pet_grooming', 'car_wash', 'laundry', 'gym']
+   - VerticalSchema = z.enum(VERTICALS), Vertical type inferred
+   - DEFAULT_SALES_TAX_BPS = 825
+   - TIP_PRESETS = [18, 20, 25] as const
+   - SESSION_JWT_TTL_SECONDS = 60*60*24*30 (30 days)
+   - TERMINAL_JWT_TTL_SECONDS = 60*60*4 (4 hours)
+   - Generic ApiError schema and type: { error: { code: string; message: string; details?: unknown } }
+   - Generic ApiSuccess wrapper helper type
+
+6. packages/pos-shared/src/staff.ts:
+   - StaffRoleSchema = z.enum(['owner', 'manager', 'cashier']), StaffRole type
+   - PinSchema = z.string().regex(/^\d{4}$/, 'PIN must be exactly 4 digits')
+   - EmailSchema = z.string().email().toLowerCase()
+   - PasswordSchema = z.string().min(8, 'Password must be at least 8 characters')
+
+7. packages/pos-shared/src/auth.ts:
+   - JwtKindSchema = z.enum(['session', 'terminal'])
+   - SessionJwtPayloadSchema = z.object({ kind: z.literal('session'), tenant_id: z.string().uuid(), user_id: z.string().uuid(), role: z.enum(['owner', 'manager']), iat: z.number(), exp: z.number() })
+   - TerminalJwtPayloadSchema = z.object({ kind: z.literal('terminal'), tenant_id: z.string().uuid(), location_id: z.string().uuid(), staff_id: z.string().uuid(), role: z.literal('cashier'), iat: z.number(), exp: z.number() })
+   - JwtPayloadSchema = z.discriminatedUnion('kind', [SessionJwtPayloadSchema, TerminalJwtPayloadSchema])
+   - SignInRequestSchema = z.object({ email: EmailSchema, password: PasswordSchema })
+   - SignInResponseSchema = z.object({ token: z.string(), expires_at: z.string().datetime(), user: z.object({ id: z.string().uuid(), email: z.string(), role: z.enum(['owner','manager']), tenant_id: z.string().uuid() }) })
+   - PinRequestSchema = z.object({ tenant_id: z.string().uuid(), location_id: z.string().uuid(), pin: PinSchema })
+   - PinResponseSchema = z.object({ token: z.string(), expires_at: z.string().datetime(), staff: z.object({ id: z.string().uuid(), full_name: z.string(), role: z.literal('cashier'), tenant_id: z.string().uuid(), location_id: z.string().uuid() }) })
+
+8. Run pnpm -F @nuatis/pos-shared build to compile dist/. Verify dist/index.js and dist/index.d.ts exist.
+
+═══════════════════════════════════════
+SECTION 2 — pos-api auth implementation
+═══════════════════════════════════════
+
+9. Add to apps/pos-api/package.json dependencies:
+   - jose@^5.9
+   - bcrypt@^5.1
+   - "@nuatis/pos-shared": "workspace:*"
+   Add to devDependencies:
+   - @types/bcrypt
+   - vitest@^2.1
+   - supertest@^7
+   - @types/supertest
+
+10. apps/pos-api/.env.example — add:
+    - POS_JWT_SECRET= (note: "32+ random bytes, base64 or hex; generate with: openssl rand -base64 32")
+    Update env.ts to require POS_JWT_SECRET (min length 32) — fail fast on missing.
+
+11. apps/pos-api/src/lib/jwt.ts:
+    - Import { SignJWT, jwtVerify } from 'jose'
+    - Import { JwtPayloadSchema, SessionJwtPayloadSchema, TerminalJwtPayloadSchema, SESSION_JWT_TTL_SECONDS, TERMINAL_JWT_TTL_SECONDS } from '@nuatis/pos-shared'
+    - signSessionJwt({ tenant_id, user_id, role }) → returns signed JWT string + expires_at ISO date
+    - signTerminalJwt({ tenant_id, location_id, staff_id }) → same shape
+    - verifyJwt(token) → returns parsed-and-validated payload (SessionJwt | TerminalJwt) OR throws on invalid/expired
+    - Algorithm pinned to HS256
+    - Secret loaded from env.POS_JWT_SECRET (TextEncoder to Uint8Array for jose)
+
+12. apps/pos-api/src/lib/passwords.ts:
+    - hashPassword(plain) → bcrypt with cost 12
+    - verifyPassword(plain, hash) → bcrypt compare
+    - hashPin(pin) → bcrypt with cost 10 (PINs are short, balance latency)
+    - verifyPin(pin, hash) → bcrypt compare
+
+13. apps/pos-api/src/middleware/auth.ts:
+    - requireAuth() factory — returns Express middleware
+    - Reads `Authorization: Bearer <token>` header
+    - Verifies JWT, attaches parsed payload to req.auth (typed)
+    - Optional argument: required token kinds, e.g. requireAuth({ kinds: ['session'] }) or requireAuth({ kinds: ['session', 'terminal'] })
+    - 401 with { error: { code: 'unauthorized', message: '...' } } on missing/invalid/expired/wrong-kind
+    - Type augmentation in apps/pos-api/src/types/express.d.ts to declare req.auth shape
+
+14. apps/pos-api/src/routes/auth.ts:
+    - Express Router
+    - POST /v1/auth/sign-in:
+      - Validates body via SignInRequestSchema
+      - Looks up staff_member by email (Supabase service_role query)
+      - Checks role is 'owner' or 'manager' (cashiers MUST use PIN endpoint, not password)
+      - bcrypt-verifies password against staff.password_hash (NEW COLUMN — see migration step 16)
+      - Issues session JWT
+      - Returns SignInResponseSchema-shaped JSON
+      - Logs sign-in attempt to audit_log table (action: 'staff_sign_in', target_id: staff_id)
+      - 401 on bad credentials with generic message (no user enumeration)
+      - 429 not implemented this batch (rate limiting deferred)
+    - POST /v1/auth/pin:
+      - Validates body via PinRequestSchema
+      - Looks up staff_members where tenant_id, location_id matches AND role = 'cashier'
+      - For each candidate, bcrypt-verifies PIN against staff.pin_hash
+      - On match: issue terminal JWT
+      - Logs to audit_log (action: 'cashier_pin_sign_in')
+      - 401 on no match
+      - Constant-time-ish: always iterate full candidate list, never short-circuit, to limit timing attacks (acceptable for MVP since cashier set is small per location)
+
+15. Mount auth router in apps/pos-api/src/index.ts at /v1/auth.
+
+═══════════════════════════════════════
+SECTION 3 — Migration 0008 password column
+═══════════════════════════════════════
+
+16. supabase/migrations/20260502120700_staff_password_hash.sql:
+    - alter table staff_members add column password_hash text
+    - Comment: "Owner/manager password hash (bcrypt cost 12). Null for cashier-only accounts (they sign in via pin_hash)."
+    - No backfill needed (only seeded staff is the cafe owner; we'll update seed below)
+
+17. Update supabase/seed.sql:
+    - Set staff_members owner row's email to 'owner@democafe.test'
+    - Set password_hash to known-good bcrypt hash for password 'demo1234' (cost 12)
+    - Set pin_hash to known-good bcrypt hash for PIN '1234' (cost 10)
+    - Document both in seed comments
+    - Do NOT regenerate or break existing inserts; this is an UPDATE or revised INSERT
+
+═══════════════════════════════════════
+SECTION 4 — Tests (Vitest)
+═══════════════════════════════════════
+
+18. apps/pos-api/vitest.config.ts:
+    - environment: 'node'
+    - globals: false
+    - testTimeout: 5000
+    - coverage: not configured this batch
+
+19. apps/pos-api/src/lib/jwt.test.ts:
+    - test: signSessionJwt produces a token that verifyJwt parses with kind='session'
+    - test: signTerminalJwt produces a token verifyJwt parses with kind='terminal'
+    - test: verifyJwt rejects a token signed with a different secret (signature mismatch)
+    - test: verifyJwt rejects an expired token (mock clock or use a past-iat token)
+    - test: verifyJwt rejects a token with `alg: none` confusion attack (jose handles this; just confirm)
+
+20. apps/pos-api/src/lib/passwords.test.ts:
+    - test: hashPassword + verifyPassword round-trip succeeds
+    - test: verifyPassword rejects wrong password
+    - test: hashPin + verifyPin round-trip
+    - test: same password → different hashes (salt working)
+
+21. apps/pos-api/src/routes/auth.test.ts (integration via supertest):
+    - These tests REQUIRE a Supabase connection. Skip via `describe.skipIf(!process.env.SUPABASE_URL)` or similar — don't fail CI when env unset.
+    - When env set: sign in with seeded demo owner (owner@democafe.test / demo1234) returns 200 with valid session JWT
+    - Wrong password returns 401
+    - PIN sign-in with seeded PIN 1234 against demo tenant + location returns 200 with terminal JWT
+    - Wrong PIN returns 401
+    - Auth middleware accepts a valid session JWT
+    - Auth middleware rejects expired/invalid JWT with 401
+
+22. Add to apps/pos-api/package.json scripts:
+    - "test": "vitest run"
+    - "test:watch": "vitest"
+
+═══════════════════════════════════════
+SECTION 5 — Smoke + commit
+═══════════════════════════════════════
+
+23. Add to apps/pos-api/.env.example a generated POS_JWT_SECRET for local dev (clearly marked "DEV ONLY — regenerate for production"). Use openssl rand -base64 32 output or equivalent.
+
+24. From repo root: pnpm install (link workspace), pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-api typecheck, pnpm -F @nuatis/pos-api test (skipping integration tests that need Supabase).
+
+25. Commit + push:
+    - git add .
+    - git commit -m "feat(auth): JWT auth (session 30d + terminal 4h) via jose + pos-shared workspace + migration 0008"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add Auth.js, NextAuth, or any session/cookie machinery
+- Do NOT add CORS yet (no admin app calling the API yet)
+- Do NOT add rate limiting on auth endpoints (Batch 6)
+- Do NOT add /v1/auth/sign-out (stateless JWT — client just discards token; revocation list deferred)
+- Do NOT add password reset, email verification, magic links — owner/manager creation is admin-seeded for MVP
+- Do NOT create a Next.js admin app — Batch 5
+- Do NOT add menu/order/payment routes — Batch 6+
+- Do NOT touch artifacts/ folder
+- Do NOT add refresh token endpoints — out of scope per locked decision
+- Do NOT add cookie middleware or CSRF protection — Bearer header only
+
+TECH CONSTRAINTS
+- jose v5+ (not v4 — v5 has the typed API we want)
+- bcrypt cost 12 for passwords, cost 10 for PINs (PINs are entered frequently; password is rare)
+- All Zod schemas live in pos-shared, never duplicated in pos-api
+- All JWT sign/verify uses HS256 explicitly — never accept other algs in jwtVerify options
+- Auth middleware always returns JSON error, never HTML
+- Audit log entries on every sign-in attempt (success AND failure) — include ip_address from req
+- Constant-ish time PIN comparison: iterate all candidate cashiers, even on first match (not perfect, but better than early-return)
+- Workspace protocol: all internal deps use `workspace:*`, not version pinning
+
+ACCEPTANCE
+1. packages/pos-shared/dist/ contains compiled JS + .d.ts files
+2. apps/pos-api typechecks clean (pnpm -F @nuatis/pos-api typecheck → 0 errors)
+3. Vitest unit tests pass: jwt.test.ts (5 cases) + passwords.test.ts (4 cases)
+4. Vitest integration tests skip cleanly when SUPABASE_URL unset (don't fail)
+5. POST /v1/auth/sign-in shape works (can be stubbed without DB if needed; document if integration test was skipped)
+6. POST /v1/auth/pin shape works
+7. Migration 0008 file exists with the correct content
+8. Seed file has owner@democafe.test + bcrypt password hash + bcrypt PIN hash
+9. apps/pos-api/.env.example has POS_JWT_SECRET documented
+10. git status clean post-commit
+11. git log --oneline -1 matches the spec commit message
+
+HARD STOP
+Stop after scope. Report:
+- Test output (counts of pass/fail/skip)
+- pnpm install warnings if any (peer dep issues with bcrypt are common — document if so)
+- The bcrypt hashes used in seed (so we have a record of what password/PIN they correspond to)
+- Confirm migrations 0001-0007 untouched, only 0008 added
+- Confirm artifacts/ untouched
+- Open questions for next batch (especially: do we want to scaffold apps/pos-admin as Next.js 14 in Batch 5, or skip admin entirely and go straight to a /v1/menu CRUD batch since the test harness can drive it; do we want a CORS allowlist now or wait until a real client exists)
+
+Wait for next prompt.

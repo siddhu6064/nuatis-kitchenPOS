@@ -1,6 +1,11 @@
 -- seed.sql
 -- demo data for local development and review
--- pin = 1234  →  bcrypt hash below (cost 10, known test vector)
+--
+-- DEMO CREDENTIALS (sign-in endpoints):
+--   owner email+password: owner@democafe.test / demo1234
+--     password_hash: bcrypt('demo1234', cost 12)
+--   cashier PIN: 1234
+--     pin_hash: bcrypt('1234', cost 10)
 
 -- -----------------------------------------------------------------------
 -- tenant
@@ -21,19 +26,21 @@ insert into locations (id, tenant_id, name, address, sales_tax_bps) values
   );
 
 -- -----------------------------------------------------------------------
--- staff — owner, pin = 1234
--- bcrypt('1234', '$2a$10$fixedsaltfixedsaltfixed') test hash:
---   $2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy
+-- staff — owner
+--   email: owner@democafe.test
+--   password: demo1234  → bcrypt cost 12 hash below
+--   PIN: 1234           → bcrypt cost 10 hash below
 -- -----------------------------------------------------------------------
-insert into staff_members (id, tenant_id, location_ids, full_name, email, role, pin_hash) values
+insert into staff_members (id, tenant_id, location_ids, full_name, email, role, pin_hash, password_hash) values
   (
     '00000000-0000-0000-0000-000000000020',
     '00000000-0000-0000-0000-000000000001',
     array['00000000-0000-0000-0000-000000000010']::uuid[],
     'Siddhu Demo',
-    'demo@nuatis.com',
+    'owner@democafe.test',
     'owner',
-    '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy'
+    '$2b$10$aS0M.iEO5YNh03JFr2HuU.nwe1309vaI5X/CWga6jCpCwn9jaFtp6',
+    '$2b$12$AQ1toq4xT1LgXnePT7bmW.3jPvXu53KyZymwQeb3Iezv0.XBNeusO'
   );
 
 -- -----------------------------------------------------------------------

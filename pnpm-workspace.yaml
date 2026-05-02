@@ -37,6 +37,7 @@ minimumReleaseAgeExclude:
 packages:
   - artifacts/*
   - apps/*
+  - packages/*
   - lib/*
   - lib/integrations/*
   - scripts
@@ -71,6 +72,7 @@ autoInstallPeers: false
 
 onlyBuiltDependencies:
   - '@swc/core'
+  - bcrypt
   - esbuild
   - msw
   - unrs-resolver
