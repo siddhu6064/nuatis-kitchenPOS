@@ -1,0 +1,36 @@
+Continuing Nuatis POS production build. State of play:
+
+REPO: siddhu6064/nuatis-kitchenPOS · all batches pushed to main
+ARCHITECTURE: separate Supabase from Suite (Option 2 bridge — API webhooks at integration time), no pos_ prefix on tables, multi-tenant from day one
+
+DONE (5 batches shipped on May 2):
+- Batch 1: supabase/migrations 0001-0006 + seed.sql (17 tables, multi-tenant + RLS)
+- Batch 2: migration 0007 — service_role bypass on all 17 tables + tenant_id denormalization on order_items + refunds
+- Batch 3: apps/pos-api scaffold — Express ESM TS NodeNext, port 3002, /v1/health, pino logger, Zod env validation
+- Batch 4: jose JWT auth (HS256, session 30d / terminal 4h), bcrypt passwords + PINs, /v1/auth/sign-in + /v1/auth/pin endpoints, packages/pos-shared workspace with Zod schemas, vitest harness (12 unit pass, integration tests skip-graceful pre-Supabase), migration 0008 (password_hash column)
+- Batch 5: full menu CRUD — /v1/menu/{categories,items,modifier-groups,modifier-options,tree} + composite TS project setup, role guards (terminal JWT read-only, owner+manager mutate), tenant isolation verified
+
+ARCHITECTURAL DECISIONS LOCKED:
+- JWT lib: jose v5, HS256 pinned, no refresh tokens (MVP simplicity)
+- Auth header: Authorization: Bearer (no cookies, no CSRF concern)
+- Soft deletes for menu_categories/items/modifier_groups (referenced by historical orders); hard delete only for modifier_options
+- All routes injected with tenant_id from req.auth, never trust body/query params
+- Audit log: fire-and-forget on every mutation
+- Composite TS project across pos-api + pos-shared; new Express routers must be annotated `const xRouter: IRouter = Router()` to satisfy TS2742 with composite mode
+- Supabase CLI install + supabase start deferred until all tables exist (avoid mid-flight schema churn)
+
+DEMO CREDENTIALS (in seed.sql):
+- Tenant: 00000000-0000-0000-0000-000000000001 'Demo Cafe' vertical: cafe
+- Owner: owner@democafe.test / password: demo1234 / role: owner
+- PIN: 1234
+
+NEXT BATCH (Batch 6): /v1/orders state machine
+- POST /v1/orders → open
+- POST /v1/orders/:id/items → add lines, items individually open
+- POST /v1/orders/:id/send-to-kitchen → items open → fired, broadcast to KDS Realtime
+- POST /v1/orders/:id/checkout → returns calculated subtotal + tax + tip preview (idempotent, no state change)
+- POST /v1/orders/:id/payments → creates payment row in requires_payment_method (mocked, real Stripe Batch 8)
+- POST /v1/orders/:id/payments/:pid/confirm → marks payment succeeded, flips order to paid
+- POST /v1/orders/:id/void → manager-PIN gated, sets order voided
+
+Generate the Batch 6 Replit Agent prompt in the standard format. Use locked decisions above. Hard stop after acceptance. Reply with prompt only.
