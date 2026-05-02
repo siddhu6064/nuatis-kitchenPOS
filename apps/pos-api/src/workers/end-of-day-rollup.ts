@@ -13,7 +13,7 @@
 
 import { Worker, type Job } from "bullmq";
 import { getRedisConnection, getEodRollupQueue, type EodRollupJobData } from "../lib/queue.js";
-import { aggregateEndOfDay } from "../lib/reports.js";
+import { aggregateEndOfDay, type PaymentRow } from "../lib/reports.js";
 import { getSupabaseClient } from "../lib/supabase.js";
 import { sendReceiptEmail, type SendEmailParams } from "../lib/email.js";
 import { logger } from "../lib/logger.js";
@@ -68,7 +68,7 @@ function renderDailyReportHtml(params: {
   netCents: number;
   orderCount: number;
   paidOrderCount: number;
-  byMethod: Array<{ method: string; count: number; gross_cents: number }>;
+  byMethod: Array<{ method: PaymentRow["method"]; count: number; gross_cents: number }>;
 }): string {
   const { tenant, date, grossSalesCents, tipsCents, taxCents, netCents, orderCount, paidOrderCount, byMethod } = params;
 
@@ -253,7 +253,7 @@ export async function processRollup(
   const orderIds = (orders ?? []).map((o: { id: string }) => o.id);
 
   let orderItems: unknown[] = [];
-  let payments: Array<{ id: string; order_id: string; method: string; amount_cents: number; tip_cents: number; status: string; created_at: string }> = [];
+  let payments: PaymentRow[] = [];
   let staffMembers: unknown[] = [];
   let menuItems: unknown[] = [];
   let refunds: Array<{ id: string; order_id: string; amount_cents: number; created_at: string }> = [];

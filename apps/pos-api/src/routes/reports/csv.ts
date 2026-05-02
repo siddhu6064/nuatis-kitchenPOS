@@ -4,7 +4,7 @@ import { stringify } from "csv-stringify/sync";
 import { requireAuth } from "../../middleware/auth.js";
 import { requireRole } from "../../middleware/role-guard.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
-import { aggregateEndOfDay } from "../../lib/reports.js";
+import { aggregateEndOfDay, type PaymentRow } from "../../lib/reports.js";
 
 export const csvRouter: IRouter = Router();
 
@@ -188,7 +188,7 @@ csvRouter.get(
 
       const orderIds = (orders ?? []).map((o: { id: string }) => o.id);
 
-      let payments: Array<{ id: string; order_id: string; method: string; amount_cents: number; tip_cents: number; status: string; created_at: string }> = [];
+      let payments: PaymentRow[] = [];
       let orderItems: unknown[] = [];
       let staffMembers: unknown[] = [];
       let menuItems: unknown[] = [];
@@ -236,14 +236,11 @@ csvRouter.get(
         is_snapshot: false,
         snapshot_at: null,
         ...agg,
-        by_method: agg.by_method as EndOfDayReport["by_method"],
-        by_item: agg.by_item as EndOfDayReport["by_item"],
-        by_staff: agg.by_staff as EndOfDayReport["by_staff"],
       };
     }
 
     if (!report) {
-      res.status(500).json({ error: { code: "internal_error", message: "Failed to compute report" } });
+      res.status(404).json({ error: { code: "not_found", message: "No data found for the requested date" } });
       return;
     }
 

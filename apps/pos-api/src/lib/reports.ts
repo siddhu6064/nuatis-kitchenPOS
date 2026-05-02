@@ -21,6 +21,8 @@
  *   net_cents          = gross_sales_cents + tips_cents − refunds_cents
  */
 
+import type { PaymentMethodBreakdown } from "@nuatis/pos-shared";
+
 // ---------------------------------------------------------------------------
 // Input row shapes (DB-agnostic plain objects)
 // ---------------------------------------------------------------------------
@@ -50,7 +52,7 @@ export interface OrderItemRow {
 export interface PaymentRow {
   id: string;
   order_id: string;
-  method: string; // 'card_present' | 'card_not_present' | 'cash' | 'card_mock'
+  method: PaymentMethodBreakdown["method"];
   amount_cents: number;
   tip_cents: number;
   status: string; // 'pending' | 'succeeded' | 'failed' | 'refunded'
@@ -98,7 +100,7 @@ export interface AggregateResult {
   paid_order_count: number;
   voided_order_count: number;
   by_method: Array<{
-    method: string;
+    method: PaymentMethodBreakdown["method"];
     count: number;
     gross_cents: number;
   }>;
@@ -237,7 +239,7 @@ export function aggregateEndOfDay(params: AggregateParams): AggregateResult {
 
   // ── by_method ─────────────────────────────────────────────────────────────
 
-  const methodMap = new Map<string, { count: number; gross_cents: number }>();
+  const methodMap = new Map<PaymentMethodBreakdown["method"], { count: number; gross_cents: number }>();
   for (const p of succeededPayments) {
     const existing = methodMap.get(p.method) ?? { count: 0, gross_cents: 0 };
     methodMap.set(p.method, {

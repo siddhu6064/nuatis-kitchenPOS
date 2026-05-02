@@ -185,7 +185,7 @@ endOfDayRouter.get(
         .select("id, payment_id, amount_cents, created_at")
         .in("payment_id", paymentIds);
 
-      const paymentToOrder = new Map(
+      const paymentToOrder = new Map<string, string>(
         (payments ?? []).map((p: { id: string; order_id: string }) => [p.id, p.order_id])
       );
 
@@ -195,7 +195,7 @@ endOfDayRouter.get(
         .filter((r) => paymentToOrder.has(r.payment_id))
         .map((r) => ({
           id: r.id,
-          order_id: paymentToOrder.get(r.payment_id) as string,
+          order_id: paymentToOrder.get(r.payment_id)!,
           amount_cents: r.amount_cents,
           created_at: r.created_at,
         }));

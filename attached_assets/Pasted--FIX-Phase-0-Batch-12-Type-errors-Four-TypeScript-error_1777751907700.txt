@@ -1,0 +1,43 @@
+▶ FIX [Phase 0 · Batch 12 · Type errors]
+
+Four TypeScript errors to fix. Apply minimal changes; do not refactor beyond what's needed.
+
+ERROR 1 — apps/pos-api/src/routes/reports/csv.ts:232 — by_method.method enum widening
+The aggregateEndOfDay() return type in lib/reports.ts has by_method[].method typed as `string`. The response schema expects the literal union 'card_present' | 'card_not_present' | 'cash' | 'card_mock'.
+FIX: In lib/reports.ts, change the AggregateResult type so by_method[].method uses the PaymentMethod enum imported from @nuatis/pos-shared. Source-level fix, not a cast at the boundary.
+
+ERROR 2 — apps/pos-api/src/routes/reports/csv.ts:242 — `report` narrowed to null
+Symptom: TS thinks `report` is null after a conditional assignment. Likely the variable was declared with implicit `let report = null` then assigned later.
+FIX: Restructure with explicit typing. Example pattern:
+  const report = await loadReport(...);
+  if (!report) {
+    return res.status(404).json({ error: { code: 'not_found', message: '...' } });
+  }
+  // From here, TS knows report is non-null
+Avoid `let x = null` patterns; use const + early-return.
+
+ERROR 3 — apps/pos-api/src/routes/reports/end-of-day.ts:192 — Map.get() returning {}
+The Map was constructed without explicit type parameters, so values default to {}. .get()! returns {} instead of the real row shape.
+FIX: At Map construction site, add explicit type parameters. Example:
+  const ordersById = new Map<string, OrderRow>();
+where OrderRow is the actual row shape (define above or import).
+Then .get(id)! returns OrderRow correctly.
+
+ERROR 4 — apps/pos-api/src/routes/reports/reports.test.ts:23 — no default export
+The test file is importing a default export from a module that only has named exports.
+FIX: Change the import to named:
+  import { aggregateEndOfDay } from '../../lib/reports.js';
+(or whatever named export is actually being used at line 23 and below). Check usage downstream and update accordingly.
+
+ACCEPTANCE
+1. pnpm -F @nuatis/pos-api typecheck → 0 errors
+2. pnpm -F @nuatis/pos-api test → existing tests still pass; reports.test.ts unit tests run
+3. No new runtime behavior changes — purely type-level fixes
+4. No changes to migration files, no changes outside the four files mentioned
+
+HARD STOP
+Stop after fixes applied. Report:
+- Diff summary per file
+- typecheck output
+- test output (pass/fail count)
+- Confirm only those 4 files changed
