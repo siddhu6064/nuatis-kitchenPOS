@@ -1,0 +1,160 @@
+▶ PROMPT [Phase 0 · Batch 3 · Replit Agent]
+
+CONTEXT
+Database layer (migrations 0001-0007) is complete. All 17 tables have RLS + service_role bypass. Time to scaffold the Express API that backend workers and the terminal/admin clients will call. This is `apps/pos-api` — Express ESM TypeScript with NodeNext module resolution, port 3002, mirroring the Suite API's conventions exactly. NO routes implemented this batch beyond /v1/health. NO Auth.js wiring yet (Batch 4). NO menu CRUD endpoints (Batch 5+). This batch is pure scaffold: project structure, TypeScript config, Supabase client, env validation, error handling middleware, /v1/health route, and the Replit run config.
+
+GOAL
+Boot a working Express ESM TypeScript API at apps/pos-api that responds to GET /v1/health with { status: 'ok', supabase: 'connected' | 'disconnected', uptime_ms: number } — proving the schema-aware Supabase client can reach the project (or fail gracefully if env vars not yet set).
+
+SCOPE — BUILD THIS
+
+1. Create folder `apps/pos-api/` at repo root (sibling to `artifacts/`, `supabase/`).
+
+2. apps/pos-api/package.json:
+   - name: "@nuatis/pos-api", private: true, type: "module"
+   - scripts: dev (tsx watch src/index.ts), build (tsc), start (node dist/index.js), typecheck (tsc --noEmit)
+   - dependencies: express@^4.21, @supabase/supabase-js@^2.45, zod@^3.23, pino@^9, pino-http@^10, dotenv@^16
+   - devDependencies: typescript@^5.6, tsx@^4.19, @types/express, @types/node, @types/pino-http
+   - Use exact versions where possible; mirror Suite's API where convention overlaps
+
+3. apps/pos-api/tsconfig.json:
+   - target: ES2022
+   - module: NodeNext
+   - moduleResolution: NodeNext
+   - strict: true
+   - esModuleInterop: true
+   - resolveJsonModule: true
+   - rootDir: ./src
+   - outDir: ./dist
+   - declaration: false
+   - sourceMap: true
+
+4. apps/pos-api/.env.example with these documented placeholders:
+   - PORT=3002
+   - NODE_ENV=development
+   - SUPABASE_URL= (empty, "fill in when project linked")
+   - SUPABASE_SERVICE_ROLE_KEY= (empty, "from Supabase Dashboard → API → service_role secret")
+   - LOG_LEVEL=info
+   
+   Add a comment at top: "Copy to .env and fill in. Never commit .env."
+
+5. apps/pos-api/.gitignore:
+   - node_modules/
+   - dist/
+   - .env
+   - *.log
+
+6. apps/pos-api/src/env.ts:
+   - Validate process.env via Zod schema
+   - Required: PORT (coerce number, default 3002), NODE_ENV (enum: development | production | test, default development), LOG_LEVEL (enum: trace | debug | info | warn | error | fatal, default info)
+   - Optional but warned-if-missing: SUPABASE_URL (string url), SUPABASE_SERVICE_ROLE_KEY (string min length 20)
+   - Export typed env object
+   - On parse failure: log clear error, exit 1
+   - Missing optional Supabase env: log warning ("Supabase not configured — /v1/health will report supabase: disconnected"), DO NOT exit
+
+7. apps/pos-api/src/lib/supabase.ts:
+   - Export function `getSupabaseClient()` that returns a singleton Supabase client OR null if env not configured
+   - Use service_role key (bypasses RLS — appropriate for API backend)
+   - Set { auth: { persistSession: false, autoRefreshToken: false } }
+   - Handle the "env not set" case gracefully — return null, don't throw
+
+8. apps/pos-api/src/lib/logger.ts:
+   - Export a configured pino logger
+   - In development: pino-pretty transport for readable output
+   - In production: structured JSON
+   - Use env.LOG_LEVEL
+
+9. apps/pos-api/src/middleware/error-handler.ts:
+   - Express error-handling middleware (4-arg signature)
+   - Logs error with logger
+   - Returns { error: { code: string, message: string } } JSON, never leaks stack traces in production
+   - 500 default, but reads err.statusCode if set
+
+10. apps/pos-api/src/middleware/request-id.ts:
+    - Generates request ID (uuid v4) per request, attaches to req.id, sets X-Request-Id response header
+    - Used by pino-http for structured logging correlation
+
+11. apps/pos-api/src/routes/health.ts:
+    - GET /v1/health
+    - Returns { status: 'ok', supabase: 'connected' | 'disconnected' | 'not_configured', uptime_ms: number, version: string (read from package.json), timestamp: ISO8601 }
+    - "supabase" check: if client is null → 'not_configured'; if client exists, run a 1-second-timeout query like `select 1` or simplest equivalent (`from('tenants').select('id').limit(1)`) → 'connected' on success, 'disconnected' on timeout/error
+    - Never returns 500 — health endpoint should always respond 200, status field carries the truth
+
+12. apps/pos-api/src/index.ts (entry point):
+    - Import env (validates on boot)
+    - Create Express app
+    - Wire middleware order: request-id, pino-http, express.json({ limit: '1mb' }), routes, error-handler
+    - Mount health router at /v1
+    - app.listen(env.PORT, () => logger.info({ port: env.PORT, env: env.NODE_ENV }, 'pos-api ready'))
+    - Graceful shutdown: handle SIGTERM, SIGINT — log, close server, exit 0
+
+13. apps/pos-api/README.md:
+    - What this is (Nuatis POS API — Express ESM TypeScript, port 3002)
+    - Quick start: copy .env.example to .env, fill in (or leave Supabase blank for now), pnpm install, pnpm dev
+    - Folder structure (src/{routes,middleware,lib})
+    - How to add a new route (create routes/X.ts, mount in index.ts)
+    - Test the health endpoint: curl http://localhost:3002/v1/health
+    - Note that Auth.js wiring is Batch 4 — for now, no auth on routes
+
+14. Update root package.json:
+    - Add to workspaces array: "apps/*" if not already present
+    - Add root scripts: "api:dev" (cd apps/pos-api && pnpm dev), "api:build" (cd apps/pos-api && pnpm build), "api:typecheck" (cd apps/pos-api && pnpm typecheck)
+
+15. Run `pnpm install` from root to install the new workspace's deps. Verify pnpm-lock.yaml updated.
+
+16. Smoke test before reporting done:
+    - From root: pnpm api:dev (in background or new shell)
+    - curl http://localhost:3002/v1/health
+    - Expect: 200 response with status: 'ok', supabase: 'not_configured' (since no .env yet), uptime_ms > 0
+    - Kill server after success
+
+17. Commit + push:
+    - git add .
+    - git commit -m "feat(api): scaffold pos-api Express ESM TS with /v1/health (port 3002)"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add Auth.js, NextAuth, or any authentication middleware (that's Batch 4)
+- Do NOT add CORS middleware yet — we'll add it once we know admin/terminal hostnames (Batch 5+)
+- Do NOT add rate limiting (Batch 6+)
+- Do NOT add menu/order/payment/staff routes — only /v1/health this batch
+- Do NOT add database migrations or seed data
+- Do NOT modify supabase/ folder
+- Do NOT modify artifacts/ folder
+- Do NOT add Stripe SDK or any third-party API clients (Batch 6+)
+- Do NOT add OpenAPI/Swagger docs (deferred)
+- Do NOT add tests (Vitest comes in Batch 4 alongside Auth.js so we have something to test)
+- Do NOT use ts-node, ts-node-dev, or nodemon — tsx is the runner
+- Do NOT use CommonJS — pure ESM with .js import suffixes per NodeNext convention
+
+TECH CONSTRAINTS
+- Express 4 (NOT Express 5 — still beta, breaks middleware compatibility)
+- All imports use .js suffix per NodeNext convention (e.g. `import { logger } from './lib/logger.js'` even though the file is .ts)
+- Strict TypeScript, no `any`, no `@ts-ignore` (use proper Zod inference for env)
+- Pino for logging, never console.log (except in pino-pretty transport config)
+- Singleton Supabase client (don't instantiate per-request)
+- All env access goes through env.ts — never read process.env elsewhere
+- pnpm, not npm or yarn
+
+ACCEPTANCE
+1. apps/pos-api/ exists with src/, package.json, tsconfig.json, README.md
+2. pnpm install from root succeeds with no errors
+3. pnpm api:typecheck passes (zero errors)
+4. pnpm api:dev boots successfully and logs "pos-api ready" with port 3002
+5. curl http://localhost:3002/v1/health returns 200 with the documented JSON shape
+6. supabase field reports 'not_configured' (since .env is not filled in)
+7. Killing the dev server logs graceful shutdown (no unhandled rejections)
+8. .env is gitignored (verify with git check-ignore apps/pos-api/.env)
+9. .env.example is committed
+10. git log --oneline -1 shows the exact commit message
+11. git status clean
+
+HARD STOP
+Stop after scope. Report:
+- Full health endpoint response (paste actual JSON)
+- pnpm install warnings if any (peer deps, deprecated packages)
+- Any TypeScript strict-mode complaints that required workarounds
+- Confirm supabase/ and artifacts/ untouched (git diff --stat should show only apps/pos-api/* and root package.json changes)
+- Open questions for next batch (especially: Auth.js v5 vs lighter-weight JWT for staff PIN sessions; do we want a shared @nuatis/types package now or wait until we have shared types)
+
+Wait for next prompt.

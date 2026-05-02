@@ -11,7 +11,10 @@
     "db:push": "cd supabase && supabase db push",
     "db:reset": "cd supabase && supabase db reset",
     "db:diff": "cd supabase && supabase db diff",
-    "db:migrate:new": "cd supabase && supabase migration new"
+    "db:migrate:new": "cd supabase && supabase migration new",
+    "api:dev": "pnpm --filter @nuatis/pos-api run dev",
+    "api:build": "pnpm --filter @nuatis/pos-api run build",
+    "api:typecheck": "pnpm --filter @nuatis/pos-api run typecheck"
   },
   "private": true,
   "devDependencies": {
