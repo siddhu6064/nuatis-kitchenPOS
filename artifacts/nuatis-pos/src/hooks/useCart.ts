@@ -48,6 +48,25 @@ export function useCart() {
     });
   }
 
+  function incrementItem(id: string) {
+    setLines((prev) =>
+      prev.map((l) => (l.item.id === id ? { ...l, qty: l.qty + 1 } : l))
+    );
+  }
+
+  function decrementItem(id: string) {
+    setLines((prev) => {
+      const line = prev.find((l) => l.item.id === id);
+      if (!line) return prev;
+      if (line.qty <= 1) return prev.filter((l) => l.item.id !== id);
+      return prev.map((l) => (l.item.id === id ? { ...l, qty: l.qty - 1 } : l));
+    });
+  }
+
+  function removeItem(id: string) {
+    setLines((prev) => prev.filter((l) => l.item.id !== id));
+  }
+
   function clearCart() {
     setLines([]);
   }
@@ -55,12 +74,9 @@ export function useCart() {
   const subtotal = lines.reduce((sum, l) => sum + l.item.price * l.qty, 0);
   const tax = subtotal * TAX_RATE;
   const grandTotal = subtotal + tax;
+  const itemCount = lines.reduce((sum, l) => sum + l.qty, 0);
 
-  const totals: CartTotals = {
-    subtotal,
-    tax,
-    grandTotal,
-  };
+  const totals: CartTotals = { subtotal, tax, grandTotal };
 
-  return { lines, addItem, clearCart, totals };
+  return { lines, addItem, incrementItem, decrementItem, removeItem, clearCart, totals, itemCount };
 }

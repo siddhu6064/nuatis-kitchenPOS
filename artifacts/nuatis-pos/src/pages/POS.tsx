@@ -5,7 +5,7 @@ import { useCart } from "@/hooks/useCart";
 
 export function POS() {
   const { user, logout } = useAuth();
-  const { lines, addItem, clearCart, totals } = useCart();
+  const { lines, addItem, incrementItem, decrementItem, removeItem, clearCart, totals, itemCount } = useCart();
 
   const displayName =
     [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
@@ -24,6 +24,11 @@ export function POS() {
           <span className="font-semibold text-slate-900 tracking-tight">Nuatis POS</span>
           <span className="text-slate-400 text-sm">·</span>
           <span className="text-slate-500 text-sm">Cafe</span>
+          {itemCount > 0 && (
+            <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+              {itemCount} {itemCount === 1 ? "item" : "items"}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -39,7 +44,14 @@ export function POS() {
 
       <div className="flex flex-1 overflow-hidden">
         <MenuGrid onTap={addItem} />
-        <CartSidebar lines={lines} totals={totals} onClear={clearCart} />
+        <CartSidebar
+          lines={lines}
+          totals={totals}
+          onIncrement={incrementItem}
+          onDecrement={decrementItem}
+          onRemove={removeItem}
+          onClear={clearCart}
+        />
       </div>
     </div>
   );

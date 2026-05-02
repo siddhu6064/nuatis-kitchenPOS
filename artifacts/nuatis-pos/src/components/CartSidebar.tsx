@@ -1,8 +1,12 @@
+import { Plus, Minus, X } from "lucide-react";
 import type { CartLine, CartTotals } from "@/hooks/useCart";
 
 interface Props {
   lines: CartLine[];
   totals: CartTotals;
+  onIncrement: (id: string) => void;
+  onDecrement: (id: string) => void;
+  onRemove: (id: string) => void;
   onClear: () => void;
 }
 
@@ -10,7 +14,7 @@ function fmt(n: number) {
   return n.toFixed(2);
 }
 
-export function CartSidebar({ lines, totals, onClear }: Props) {
+export function CartSidebar({ lines, totals, onIncrement, onDecrement, onRemove, onClear }: Props) {
   const isEmpty = lines.length === 0;
 
   return (
@@ -19,7 +23,7 @@ export function CartSidebar({ lines, totals, onClear }: Props) {
         <h2 className="text-base font-semibold text-slate-800 tracking-tight">Current Order</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-3">
+      <div className="flex-1 overflow-y-auto px-4 py-3">
         {isEmpty ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-16">
             <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3">
@@ -35,17 +39,67 @@ export function CartSidebar({ lines, totals, onClear }: Props) {
             {lines.map(({ item, qty }) => (
               <li
                 key={item.id}
-                className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0"
+                className="relative flex items-center gap-3 py-3 border-b border-slate-50 last:border-0"
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="shrink-0 w-7 h-7 rounded-lg bg-amber-100 text-amber-800 text-xs font-bold flex items-center justify-center">
+                {/* Remove X — top-right, 44×44 tap target */}
+                <button
+                  onClick={() => onRemove(item.id)}
+                  aria-label={`Remove ${item.name} from order`}
+                  className="
+                    absolute -top-0.5 right-0
+                    w-[44px] h-[44px] flex items-center justify-center
+                    text-slate-300 hover:text-red-400 active:text-red-600
+                    transition-colors duration-100 rounded-lg
+                  "
+                >
+                  <X size={15} strokeWidth={2.5} />
+                </button>
+
+                {/* Item info */}
+                <div className="flex-1 min-w-0 pr-8">
+                  <p className="text-slate-800 text-sm font-semibold leading-tight truncate">{item.name}</p>
+                  <p className="text-slate-400 text-xs mt-0.5">${fmt(item.price)} each</p>
+                </div>
+
+                {/* Qty controls + line total */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* − button */}
+                  <button
+                    onClick={() => onDecrement(item.id)}
+                    aria-label={qty === 1 ? `Remove ${item.name}` : `Decrease quantity of ${item.name}`}
+                    className="
+                      w-[44px] h-[44px] flex items-center justify-center
+                      rounded-lg border border-slate-200 text-slate-600
+                      hover:bg-slate-50 active:bg-slate-100
+                      transition-colors duration-100
+                    "
+                  >
+                    <Minus size={14} strokeWidth={2.5} />
+                  </button>
+
+                  <span className="w-6 text-center text-sm font-bold text-slate-800 tabular-nums select-none">
                     {qty}
                   </span>
-                  <span className="text-slate-800 text-sm font-medium truncate">{item.name}</span>
+
+                  {/* + button */}
+                  <button
+                    onClick={() => onIncrement(item.id)}
+                    aria-label={`Increase quantity of ${item.name}`}
+                    className="
+                      w-[44px] h-[44px] flex items-center justify-center
+                      rounded-lg bg-amber-50 border border-amber-200 text-amber-700
+                      hover:bg-amber-100 active:bg-amber-200
+                      transition-colors duration-100
+                    "
+                  >
+                    <Plus size={14} strokeWidth={2.5} />
+                  </button>
+
+                  {/* Line total */}
+                  <span className="w-14 text-right text-sm font-bold text-slate-800 tabular-nums">
+                    ${fmt(item.price * qty)}
+                  </span>
                 </div>
-                <span className="text-slate-700 text-sm font-semibold tabular-nums ml-4 shrink-0">
-                  ${fmt(item.price * qty)}
-                </span>
               </li>
             ))}
           </ul>

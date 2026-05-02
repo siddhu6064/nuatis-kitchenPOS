@@ -1,0 +1,63 @@
+▶ PROMPT [Phase 2 · Batch 2 · Replit Agent]
+
+CONTEXT
+Batch 1 shipped: Replit Auth, cafe menu grid (12 items), tap-to-add cart with
+localStorage persistence, subtotal/tax(8.25%)/grand total math. Stack landed as
+React + Vite (Replit workspace constraint, fine for throwaway prototype).
+Repo: github.com/siddhu6064/nuatis-kitchenPOS.
+Now: line-level cart controls so cashier can adjust without clearing the order.
+
+GOAL
+Cashier can increment, decrement, and remove individual cart lines, with totals
+and persistence updating live.
+
+SCOPE — BUILD THIS
+1. Each cart line shows inline qty controls: − button | qty number | + button,
+     positioned next to the line total
+2. + increments qty by 1; − decrements by 1; at qty 1, − removes the line
+3. Per-line remove button — X icon, top-right of each line, instant remove
+     (no confirm dialog)
+4. All tap targets minimum 44×44 px for thumb use on iPad
+5. Line layout hierarchy: item name (prominent), price (subtle below), qty
+     controls compact, line total right-aligned and bold
+6. Header gains a small item-count pill — "3 items" next to "Cafe" label,
+     hidden when cart is empty
+7. Tapping a menu tile when item already in cart still increments qty
+     (existing behavior preserved)
+8. Subtotal, tax, grand total update immediately on every mutation —
+     no debounce, no flash
+9. localStorage write happens after every state change (verify by refreshing
+     mid-edit and seeing exact state restored)
+10. Empty-state copy reappears cleanly when the last line is removed via −
+     or X (same empty state from Batch 1)
+11. Use lucide-react icons (Plus, Minus, X) — install if not present
+
+SCOPE — DO NOT BUILD
+- Checkout, payment, tip selection, receipt (Batches 3–4)
+- Modifiers, item notes, special instructions, search, filters
+- Undo for remove
+- Confirmation dialogs
+- Animations beyond default Tailwind transitions
+
+TECH CONSTRAINTS
+- Stay on current React + Vite stack
+- localStorage key unchanged: `nuatis_pos_cart_v1`
+- No new state library — local state + existing pattern
+- Tailwind v3 utility classes only
+- Keep accessibility: buttons must have aria-labels (e.g. "Increase quantity
+     of Latte")
+
+ACCEPTANCE
+- + adds 1 to the line qty; line total recomputes
+- − subtracts 1; at qty 1, pressing − removes the line entirely
+- X removes the line in one tap
+- Tapping a menu tile for an item already in cart increments qty (unchanged)
+- Header shows "N items" pill matching cart item count; hides at 0
+- All math (subtotal, 8.25% tax, grand total) updates instantly on any mutation
+- Refresh mid-edit restores exact cart state from localStorage
+- Empty state renders correctly after removing all lines
+- Controls do not overlap or fight for tap area on a 1024×768 iPad viewport
+
+HARD STOP
+Stop after scope. Report built / errors / skipped / open questions.
+Do NOT start checkout (Batch 3). Wait for next prompt.
