@@ -1,0 +1,26 @@
+Batch 11 is complete. Here's everything that was delivered:
+
+Backend (apps/pos-api)
+
+Migration 0012 — email_messages and sms_messages tracking tables; ALTER contacts adds sms_opt_in_text + sms_opt_in_ip TCPA columns
+3 new packages — bullmq, ioredis, resend installed
+env.ts — 6 new optional receipt env vars with boot warnings; boot never fails when any are absent
+lib/queue.ts — BullMQ Queue singletons; no-op mock mode when UPSTASH_REDIS_URL not set
+lib/email.ts — Resend SDK wrapper with mock fallback (logs to stdout)
+lib/sms.ts — Telnyx HTTP API wrapper with mock fallback
+lib/receipt-token.ts — 90-day HS256 JWT via jose; falls back to POS_JWT_SECRET
+routes/receipts/send.ts — POST /v1/orders/:id/receipts; validates paid order, upserts contact, records TCPA consent with IP, signs token, enqueues jobs, audit logs
+routes/receipts/view.ts — GET /r/:token; public, verifies token, renders branded HTML receipt with Cache-Control: private, max-age=86400
+workers/receipt-email.ts — fetches order/items/tenant/location, renders HTML + text templates, email_messages queued→sent/failed lifecycle; exported processReceiptEmail for testability
+workers/receipt-sms.ts — TCPA double-check before send, sms_messages lifecycle
+src/index.ts — mounts /r route, starts workers at boot, graceful SIGTERM closes workers + queues
+Tests — 76 passing, 35 skip (no Supabase), 1 todo: receipt-token.test.ts (5), receipts.test.ts (10), receipt-email.test.ts (4)
+
+Frontend (artifacts/nuatis-pos)
+
+ReceiptPromptScreen — dark-background prompt with email/phone inputs, TCPA consent checkbox (JetBrains Mono), Email/Text/Both/Skip buttons, "Receipt sent!" confirmation → auto-advances after 2s
+ApprovedScreen — new optional onSendReceipt prop; "Send Receipt" button appears between the Approved checkmark and "New Order"
+POS.tsx — "send-receipt" step added to CheckoutStep union; paidOrderId state captures the order ID before pay() clears it; clean handler wiring for prompt → cart
+Documentation — routes table, Receipt Workers section, folder structure, and TCPA pattern in apps/pos-api/README.md; service setup table in root README.md; replit.md updated with Batch 11 summary
+
+Next, I can add a receipt history page in the manager dashboard — showing all sent receipts (email and SMS) per order with delivery status, provider message IDs, and the ability to resend a failed receipt. Would you like me to do that?
