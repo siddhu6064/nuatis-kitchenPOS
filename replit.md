@@ -18,7 +18,7 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 ## Key Commands
 
 - `pnpm run typecheck` — full typecheck across all packages
-- `pnpm --filter @nuatis/pos-api run test` — run pos-api test suite (134 passing, 55 skip without Supabase)
+- `pnpm --filter @nuatis/pos-api run test` — run pos-api test suite (148 passing, 57 skip without Supabase)
 - `pnpm --filter @nuatis/pos-shared run build` — rebuild shared Zod schemas
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
@@ -41,17 +41,22 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 
 ### POS API (`apps/pos-api`) — core business logic server (port 3002)
 - Express ESM TypeScript, 14 Supabase migrations
-- **Routes**: auth, onboarding, menu, orders (+ KDS + audit-trail), cash, reports, locations, receipts (send + view + history), staff, settings
+- **Routes**: auth, onboarding, menu, orders (+ KDS + audit-trail + payments + refunds), cash, reports, locations, receipts (send + view + history), staff, settings, stripe (onboarding + terminal + webhook)
 - **Batch 16** added: `GET/POST/PATCH/DELETE /v1/staff`, `GET /v1/receipts` (paginated history), `GET /v1/settings`, `PATCH /v1/settings/tenant` (owner-only), `PATCH /v1/settings/locations/:id`
-- All external services (Upstash Redis, Resend, Telnyx) optional — graceful mock mode
-- **134 tests passing** (55 skip without Supabase, 1 todo) across 19 test files
+- **Batch 17** added: `POST /v1/stripe/onboarding/start`, `GET /v1/stripe/onboarding/status`, `POST /v1/stripe/terminal/connection_token`, `GET /v1/stripe/terminal/readers`, `POST /v1/webhooks/stripe` (raw body, sig-verified), `POST /v1/payments/:id/refund` (manager-pin gate + idempotency), `POST /v1/orders/:id/payments` extended with card_stripe branch
+- Stripe webhook mounted BEFORE express.json() for raw body access; all Stripe vars optional → mock mode
+- All external services (Upstash Redis, Resend, Telnyx, Stripe) optional — graceful mock mode
+- **148 tests passing** (57 skip without Supabase, 1 todo) across 22 test files
 
 ### pos-shared (`packages/pos-shared`)
 - Composite TypeScript library — Zod schemas shared between pos-api and pos-admin
-- **Schemas**: auth, cash, common, menu, orders, receipts, receipts-history (new), reports, settings (new), staff (extended)
+- **Schemas**: auth, cash, common, menu, orders, receipts, receipts-history, reports, settings, staff, stripe (new)
 - `StaffResponseSchema` (with `active`, `has_pin`), `InviteStaffRequestSchema`, `UpdateStaffRequestSchema`
 - `ReceiptHistoryEntrySchema`, `ReceiptHistoryResponseSchema`, `ListReceiptsQuerySchema`
 - `TenantSettingsSchema`, `LocationSettingsSchema`, `SettingsResponseSchema`, `TimezoneSchema`
+- `StripeAccountStatusSchema`, `CreateOnboardingLinkResponseSchema`, `CreateConnectionTokenResponseSchema`, `STRIPE_HANDLED_EVENTS`
+- `PaymentMethodSchema` now includes `"card_stripe"` in addition to cash/card_mock/card_present/card_not_present
+- `PaymentSchema` extended with `stripe_charge_id`, `application_fee_cents`, `card_brand`, `card_last4`
 
 ### POS Admin (`apps/pos-admin`) — Next.js admin portal (port 3001)
 - Next.js 14 App Router, Auth.js v5, Tailwind v3, React Query v5, Radix UI
@@ -60,7 +65,8 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Pages**: dashboard, menu, orders, cash, reports, **staff** (Batch 16), **receipts** (Batch 16), **settings** (Batch 16)
 - **Staff page**: table with role/status badges, active toggle (with self-deactivate + last-owner guard), Invite/Edit dialog
 - **Receipts page**: paginated email+SMS history, channel/status filters, click-to-copy provider ID, resend button
-- **Settings page**: tenant section (owner edits, manager read-only), per-location section (both can edit), sales tax as % input
+- **Settings page**: Stripe Connect section (owner-only Connect button, status badges), tenant section (owner edits, manager read-only), per-location section (both can edit), sales tax as % input
+- **Batch 17** added: `startStripeOnboarding()`, `getStripeStatusServer()`, `listStripeReaders()` in `src/lib/api/stripe.ts`
 
 ## Database Migrations (Supabase)
 
@@ -79,12 +85,26 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 | `20260502170000_reports_daily.sql` | daily_sales_summaries, eod_rollups, `email_daily_report` + `daily_report_recipient_email` on tenants |
 | `20260502175000_reports_v2.sql` | Timezone-aware reporting helpers |
 | `20260502180000_staff_active.sql` | `active boolean NOT NULL DEFAULT true` on staff_members + index |
+| `20260502190000_stripe_connect.sql` | `stripe_account_id`, `stripe_charges_enabled`, `stripe_payouts_enabled`, `application_fee_bps` on tenants; `stripe_payment_intent_id`, `stripe_charge_id`, `application_fee_cents`, `card_brand`, `card_last4` on payments; `idempotency_keys` table; `stripe_terminal_readers` table |
 
 ## Auth
 
 - **POS Admin**: Auth.js v5 Credentials provider → hits `POST /v1/auth/sign-in` on pos-api → stores `posJwt` + `role` in session JWT
 - **POS terminal**: terminal JWT signed by `signTerminalJwt` — kind="terminal", carries `location_id` + `staff_id`
 - **Session JWT**: kind="session", carries `user_id` + `role` (owner|manager) — used by admin routes
+
+## Stripe Integration (Batch 17)
+
+- **Mode**: Test mode only, simulated reader — no real hardware required
+- **API lib**: `apps/pos-api/src/lib/stripe.ts` — Stripe singleton (`getStripe()`) + `createPaymentIntent()` + `createConnectionToken()`
+- **Idempotency**: `apps/pos-api/src/lib/idempotency.ts` — guards refund endpoint
+- **Webhook**: `POST /v1/webhooks/stripe` handles `account.updated`, `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded` — must remain mounted BEFORE `express.json()`
+- **Refunds**: `POST /v1/payments/:id/refund` — requires manager-pin JWT, calls Stripe Refunds API, inserts idempotency key
+- **card_stripe payment flow**: POST /v1/orders/:id/payments with method=card_stripe → returns `client_secret` → POS calls `terminal.collectPaymentMethod(clientSecret)` → `terminal.processPayment(pi)` → webhook confirms order
+- **POS frontend**: `StripeTerminalProvider` wraps the app; `CheckoutOverlay` shows payment method toggle (Mock Card | Stripe Terminal) when `onPaymentMethodChange` prop provided; `TapToPayScreen` accepts `noAutoApprove` to skip timer
+- **Admin frontend**: Settings → Payments shows Connect button (owner-only), status badge (ready/incomplete/not started)
+- **Mock mode** (no STRIPE_SECRET_KEY): payment_intent IDs use `pi_mock_*` prefix; terminal always reports `isReady: false`
+- **Env vars**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PLATFORM_ACCOUNT_ID`, `STRIPE_CONNECT_RETURN_URL`, `STRIPE_CONNECT_REFRESH_URL`
 
 ## Important Constraints
 
@@ -93,3 +113,4 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - `sms_messages.status` has NO 'bounced' value (only queued/sent/failed) — email_messages has all 4
 - `req.auth` in pos-api is a discriminated union — always narrow with `req.auth.kind === "session"` before accessing `user_id`
 - pos-admin client API calls use `CLIENT_API = "/api/v1"` (relative, browser-side); server-side calls use `POS_API_URL` env var
+- Stripe webhook MUST stay mounted before `express.json()` in `apps/pos-api/src/index.ts` or signature verification will fail

@@ -8,3 +8,4 @@ export * from "./receipts-history.js";
 export * from "./reports.js";
 export * from "./settings.js";
 export * from "./staff.js";
+export * from "./stripe.js";

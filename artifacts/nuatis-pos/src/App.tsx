@@ -3,6 +3,7 @@ import { useAuth } from "@/lib/api/AuthContext";
 import { POS } from "@/pages/POS";
 import { Login } from "@/pages/Login";
 import { KdsScreen } from "@/components/kds/KdsScreen";
+import { StripeTerminalProvider } from "@/components/StripeTerminalProvider";
 
 // Strip trailing slash from Vite's BASE_URL (e.g. "/nuatis-pos/" → "/nuatis-pos")
 // so we can do a clean suffix-strip when detecting /kds route.
@@ -46,7 +47,13 @@ function App() {
     return <KdsGuard />;
   }
 
-  return isAuthenticated ? <POS /> : <Login />;
+  return isAuthenticated ? (
+    <StripeTerminalProvider>
+      <POS />
+    </StripeTerminalProvider>
+  ) : (
+    <Login />
+  );
 }
 
 export default App;

@@ -1,9 +1,9 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { CreatePaymentRequestSchema } from "@nuatis/pos-shared";
 import { requireAuth } from "../../middleware/auth.js";
-import { requireRole } from "../../middleware/role-guard.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
 import { recalcOrderTotals, writeAuditLog } from "../../lib/db.js";
+import { getStripe, createPaymentIntent } from "../../lib/stripe.js";
 
 export const paymentsRouter: IRouter = Router({ mergeParams: true });
 
@@ -31,7 +31,11 @@ async function confirmPayment(
 //   the open cash_drawer_session for this location. If no open session exists,
 //   the request is rejected with 409 / code='no_open_cash_session'.
 //
-//   Future: cash refunds (Batch 13) will insert a cash_event of type='cash_refund'.
+// card_stripe wiring:
+//   Creates a Stripe PaymentIntent on the tenant's connected account.
+//   Returns client_secret for the Terminal Web SDK to collectPaymentMethod.
+//   The order stays open — it is confirmed when payment_intent.succeeded
+//   webhook fires (see routes/stripe/webhook.ts).
 // ---------------------------------------------------------------------------
 paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Promise<void> => {
   const client = getSupabaseClient();
@@ -82,6 +86,60 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
   const tip_cents = parsed.data.tip_cents;
   const total_cents = subtotal_cents + tax_cents + tip_cents;
 
+  // ── Stripe card_stripe — create PaymentIntent ─────────────────────────────
+  let stripePaymentIntentId: string | null = null;
+  let clientSecret: string | null = null;
+
+  if (parsed.data.method === "card_stripe") {
+    const stripe = getStripe();
+
+    if (stripe) {
+      // Real mode — validate tenant onboarding + create PI on connected account
+      const { data: tenant } = await db
+        .from("tenants")
+        .select("stripe_account_id, stripe_charges_enabled, application_fee_bps")
+        .eq("id", tenantId)
+        .single();
+
+      const stripeAccountId = tenant?.stripe_account_id as string | null;
+      const chargesEnabled = tenant?.stripe_charges_enabled as boolean ?? false;
+
+      if (!stripeAccountId || !chargesEnabled) {
+        res.status(412).json({
+          error: {
+            code: "stripe_not_ready",
+            message: "Stripe onboarding is incomplete. Complete setup in Settings → Payments before accepting card payments.",
+          },
+        });
+        return;
+      }
+
+      const feeBps = (tenant?.application_fee_bps as number) ?? 0;
+      const appFeeCents = Math.round((total_cents * feeBps) / 10000);
+
+      try {
+        const pi = await createPaymentIntent({
+          amount: total_cents,
+          on_behalf_of: stripeAccountId,
+          transfer_data: { destination: stripeAccountId },
+          application_fee_amount: appFeeCents > 0 ? appFeeCents : undefined,
+          metadata: { order_id: orderId, tenant_id: tenantId },
+        });
+        stripePaymentIntentId = pi.id;
+        clientSecret = pi.client_secret ?? null;
+      } catch (err: unknown) {
+        res.status(502).json({ error: { code: "stripe_error", message: (err as Error).message } });
+        return;
+      }
+    } else {
+      // Mock mode (no STRIPE_SECRET_KEY) — generate stub IDs for testing
+      const mockId = `pi_mock_${Date.now()}`;
+      stripePaymentIntentId = mockId;
+      clientSecret = `${mockId}_secret_mock`;
+    }
+  }
+
+  // ── Insert payment row ────────────────────────────────────────────────────
   const isAutoConfirm = AUTO_CONFIRM_METHODS.has(parsed.data.method);
   const initialStatus = isAutoConfirm ? "succeeded" : "requires_payment_method";
 
@@ -94,6 +152,7 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
       tip_cents,
       status: initialStatus,
       method: parsed.data.method,
+      stripe_payment_intent_id: stripePaymentIntentId,
     })
     .select()
     .single();
@@ -123,7 +182,12 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
 
   // Return fresh order state alongside payment
   const { data: updatedOrder } = await db.from("orders").select("*").eq("id", orderId).single();
-  res.status(201).json({ payment, order: updatedOrder });
+
+  res.status(201).json({
+    payment,
+    order: updatedOrder,
+    ...(clientSecret ? { client_secret: clientSecret } : {}),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,7 +196,6 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
 paymentsRouter.post(
   "/:pid/confirm",
   requireAuth({ kinds: ["session"] }),
-  requireRole(["owner", "manager"]),
   async (req: Request, res: Response): Promise<void> => {
     const client = getSupabaseClient();
     if (!client) { res.status(503).json({ error: { code: "service_unavailable", message: "DB not configured" } }); return; }

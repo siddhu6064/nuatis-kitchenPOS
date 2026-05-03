@@ -76,6 +76,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@stripe/terminal-js": "^0.26.0",
     "@supabase/supabase-js": "^2.105.1"
   }
 }

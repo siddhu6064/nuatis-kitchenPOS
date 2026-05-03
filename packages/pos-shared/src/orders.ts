@@ -29,6 +29,7 @@ export const PaymentMethodSchema = z.enum([
   "card_mock",
   "card_present",
   "card_not_present",
+  "card_stripe",
 ]);
 export type PaymentMethod = z.infer<typeof PaymentMethodSchema>;
 
@@ -82,10 +83,14 @@ export const PaymentSchema = z.object({
   order_id: uuid,
   tenant_id: uuid,
   stripe_payment_intent_id: z.string().nullable(),
+  stripe_charge_id: z.string().nullable(),
   amount_cents: nonNegInt,
   tip_cents: nonNegInt,
+  application_fee_cents: nonNegInt,
   status: PaymentStatusSchema,
   method: PaymentMethodSchema,
+  card_brand: z.string().nullable(),
+  card_last4: z.string().nullable(),
   created_at: isoDate,
   updated_at: isoDate,
 });

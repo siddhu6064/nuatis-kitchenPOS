@@ -1,0 +1,299 @@
+▶ PROMPT [Phase 0 · Batch 17 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-16 complete: full back-of-house API + admin app + integration testbed prototype. All payments currently flow through `card_mock` method which auto-confirms in the same request (Batch 6). This batch replaces card_mock with real Stripe Connect Standard + Stripe Terminal Web SDK + PaymentIntents + webhooks + refunds + Connect onboarding flow. Test mode only — no production keys. Smart reader simulation only — physical reader pairing deferred to pilot prep. This is the highest-risk batch we've done.
+
+GOAL
+Working real-Stripe payment flow: owner completes Stripe Connect Standard onboarding via /settings → /stripe-onboarding redirect dance → tenant has stripe_account_id and charges_enabled. Cashier on prototype rings up an order, pays via card_stripe method → API creates PaymentIntent on connected account with application_fee_amount → terminal Web SDK processes payment via simulated reader → webhook fires → pos-api updates payment to 'succeeded' and order to 'paid'. Refunds work with application_fee reversal. NO physical reader. NO real money.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — Migration 0015: Stripe columns
+═══════════════════════════════════════
+
+1. supabase/migrations/20260502190000_stripe_connect.sql:
+   - Inspect existing schema first; only add deltas
+   - Expected adds:
+     * tenants.stripe_account_id text nullable (Connect Standard account ID)
+     * tenants.stripe_charges_enabled boolean default false
+     * tenants.stripe_payouts_enabled boolean default false  
+     * tenants.stripe_requirements_currently_due jsonb (array of requirement strings from Stripe)
+     * tenants.application_fee_bps int not null default 0 (per-tenant platform fee in basis points; 0 for MVP)
+     * payments.card_brand text nullable (visa, mastercard, etc.)
+     * payments.card_last4 text nullable (real last 4 from Stripe, replacing the slice() workaround in admin)
+     * payments.application_fee_cents int not null default 0
+     * payments.stripe_charge_id text nullable
+     * refunds.stripe_refund_id text not null (was nullable, now required since real refunds always have one)
+     * refunds.application_fee_refund_cents int not null default 0
+   - Backfill: set existing payments.card_brand = NULL, card_last4 = NULL, application_fee_cents = 0 (defaults handle)
+   - No table changes; just column additions
+
+═══════════════════════════════════════
+SECTION 2 — Stripe SDK setup
+═══════════════════════════════════════
+
+2. apps/pos-api dependencies:
+   - stripe@^17 (latest stable)
+   - Add to .env.example:
+     * STRIPE_SECRET_KEY= (note: sk_test_... from dashboard.stripe.com test mode)
+     * STRIPE_WEBHOOK_SECRET= (note: whsec_... from webhook endpoint)
+     * STRIPE_PLATFORM_ACCOUNT_ID= (note: acct_... — your Nuatis platform account)
+     * STRIPE_CONNECT_RETURN_URL=http://localhost:3001/settings (where Stripe sends owner after onboarding)
+     * STRIPE_CONNECT_REFRESH_URL=http://localhost:3001/settings (where Stripe sends if onboarding times out)
+   - All four optional with warnings — graceful no-op if absent (mock-mode pattern)
+
+3. apps/pos-api/src/lib/stripe.ts:
+   - Singleton Stripe SDK client initialized with STRIPE_SECRET_KEY
+   - Returns null if env not set (mock mode — log warning at boot)
+   - Helper functions:
+     * createConnectAccount(tenant_id, business_name, country, email) → returns Stripe Account
+     * createAccountLink(stripe_account_id) → returns onboarding URL with return + refresh URLs
+     * retrieveAccount(stripe_account_id) → returns Account (used by webhook to sync status)
+     * createPaymentIntent({ amount, currency, application_fee_amount, on_behalf_of, transfer_data, metadata, payment_method_types }) → returns PaymentIntent
+     * createConnectionToken(stripe_account_id?) → for Terminal Web SDK; if account_id, scopes to that connected account
+     * refundPaymentIntent(payment_intent_id, amount?, reverse_transfer=true, refund_application_fee=true)
+
+═══════════════════════════════════════
+SECTION 3 — pos-shared schemas
+═══════════════════════════════════════
+
+4. Create packages/pos-shared/src/stripe.ts:
+   - StripeAccountStatusSchema = z.object({ stripe_account_id: z.string().nullable(), charges_enabled: z.boolean(), payouts_enabled: z.boolean(), requirements_currently_due: z.array(z.string()) })
+   - CreateOnboardingLinkResponseSchema = z.object({ url: z.string().url(), expires_at: z.string().datetime() })
+   - CreateConnectionTokenResponseSchema = z.object({ secret: z.string() })
+   - WebhookEventSchema (for type narrowing): z.discriminatedUnion('type', [...]) covering account.updated, payment_intent.succeeded, payment_intent.payment_failed, charge.refunded
+   - Update PaymentSchema in packages/pos-shared/src/orders.ts:
+     * Add card_brand: z.string().nullable()
+     * Add card_last4: z.string().regex(/^\d{4}$/).nullable()
+     * Add application_fee_cents: z.number().int().nonnegative()
+     * Add stripe_charge_id: z.string().nullable()
+   - Update PaymentMethodSchema: add 'card_stripe' was already in there; verify it's the canonical method name
+
+5. Re-export from index.ts. Rebuild pos-shared.
+
+═══════════════════════════════════════
+SECTION 4 — Stripe Connect onboarding endpoints
+═══════════════════════════════════════
+
+6. apps/pos-api/src/routes/stripe/onboarding.ts:
+   - POST /v1/stripe/onboarding/start — session-only owner; creates Connect Standard account via Stripe API; stores stripe_account_id on tenant; creates Account Link; returns { url, expires_at }
+   - GET /v1/stripe/onboarding/status — session-only owner+manager; returns StripeAccountStatusSchema (live-fetch from Stripe; tolerable latency for status check)
+   - GET /v1/stripe/onboarding/refresh — session-only owner; called when Stripe redirects to refresh_url; creates a new Account Link, returns redirect URL
+   - All routes mock-mode if STRIPE_SECRET_KEY absent (return clear "stripe not configured" 503)
+
+═══════════════════════════════════════
+SECTION 5 — PaymentIntent + Terminal endpoints
+═══════════════════════════════════════
+
+7. Update apps/pos-api/src/routes/orders/payments.ts:
+   - Modify POST /v1/orders/:id/payments to handle method='card_stripe':
+     * Reject if tenant.stripe_charges_enabled = false (return 412 with code 'stripe_not_ready')
+     * Create PaymentIntent via Stripe SDK with:
+       - amount = order subtotal_cents + tax_cents + tip_cents
+       - currency: 'usd'
+       - payment_method_types: ['card_present']
+       - capture_method: 'automatic'
+       - on_behalf_of: tenant.stripe_account_id
+       - transfer_data: { destination: tenant.stripe_account_id }
+       - application_fee_amount: Math.floor(amount * tenant.application_fee_bps / 10000)
+       - metadata: { order_id, tenant_id, location_id }
+     * Insert payment row with status='requires_payment_method', stripe_payment_intent_id, application_fee_cents
+     * Return payment row + PaymentIntent.client_secret to terminal
+     * Order STAYS open until webhook fires payment_intent.succeeded (do NOT auto-confirm like card_mock did)
+   - Existing card_mock + cash methods unchanged (auto-confirm preserved for testing/cash flows)
+
+8. apps/pos-api/src/routes/stripe/terminal.ts:
+   - POST /v1/stripe/terminal/connection-token — any auth (session OR terminal); creates a connection token scoped to tenant.stripe_account_id; returns { secret } for the Terminal Web SDK
+   - GET /v1/stripe/terminal/readers — session-only owner+manager; lists registered readers for tenant via Stripe API (placeholder for future reader management UI)
+
+═══════════════════════════════════════
+SECTION 6 — Webhook handler
+═══════════════════════════════════════
+
+9. apps/pos-api/src/routes/stripe/webhook.ts:
+   - POST /v1/webhooks/stripe — NO auth (Stripe-signed, public)
+   - CRITICAL: must use raw body for signature verification — register before express.json() middleware OR use express.raw({ type: 'application/json' }) on this route only
+   - Use stripe.webhooks.constructEvent(body, sigHeader, STRIPE_WEBHOOK_SECRET) to verify
+   - On signature failure: 400 with no body (do NOT echo error details)
+   - Idempotency: use Stripe event.id; check audit_log for prior 'stripe_webhook' entry with same event.id; if exists, return 200 OK (already processed)
+   - Handle event types:
+     * account.updated → look up tenant by stripe_account_id; update charges_enabled, payouts_enabled, requirements_currently_due; audit log
+     * payment_intent.succeeded → look up payment by stripe_payment_intent_id; update payment status='succeeded'; update order status='paid'; record card_brand + card_last4 + stripe_charge_id from charge object; audit log; broadcast to terminal Realtime channel `payment:{order_id}` so the prototype's Tap-to-Pay screen advances
+     * payment_intent.payment_failed → update payment status='failed', error message; broadcast failure to terminal channel
+     * charge.refunded → look up payment by stripe_charge_id; insert/update refunds row; audit log
+   - Always returns 200 with empty body (Stripe expects 2xx)
+   - Mount in apps/pos-api/src/index.ts BEFORE express.json() — important ordering
+
+10. apps/pos-api/src/lib/idempotency.ts (small helper):
+    - hasProcessedEvent(event_id) → checks audit_log for { action: 'stripe_webhook', payload->>event_id: X }
+    - markEventProcessed(event_id, type, payload) → writes audit_log row
+    - Used by webhook to dedupe
+
+═══════════════════════════════════════
+SECTION 7 — Refund endpoint
+═══════════════════════════════════════
+
+11. apps/pos-api/src/routes/orders/refunds.ts:
+    - POST /v1/payments/:payment_id/refund — session-only owner+manager (manager_pin override pattern from Batch 10 — same middleware)
+    - Body: { amount_cents (optional, default full refund), reason (string min 1) }
+    - For card_stripe payments: call Stripe refundPaymentIntent with reverse_transfer=true, refund_application_fee=true (proportional fee reversal)
+    - For cash payments: insert refunds row + cash_event with type='cash_refund' (negative amount)
+    - For card_mock payments: just insert refunds row (no real money to reverse)
+    - Audit log 'payment_refunded' with old payment status, refund amount, reason
+    - On Stripe error: rollback DB transaction, return error
+    - Return updated payment + refund row
+
+═══════════════════════════════════════
+SECTION 8 — pos-admin: Stripe Connect onboarding UI
+═══════════════════════════════════════
+
+12. Update apps/pos-admin/src/app/settings/page.tsx:
+    - Add a "Payments" card at the top of settings, above tenant + locations
+    - States:
+      * NOT_STARTED (no stripe_account_id): banner with "Connect your Stripe account to accept payments" + "Connect Stripe" button → POST /v1/stripe/onboarding/start, redirect to returned URL
+      * IN_PROGRESS (account exists, charges_enabled=false): banner orange "Stripe onboarding incomplete — {requirements list}" + "Resume Onboarding" button → POST /v1/stripe/onboarding/start (Stripe creates a fresh link)
+      * READY (charges_enabled=true): banner green "Stripe Connected" + small text showing acct_*** suffix
+    - Server component fetches /v1/stripe/onboarding/status; client component handles the connect button click
+
+13. apps/pos-admin/src/lib/api/stripe.ts:
+    - getOnboardingStatus()
+    - startOnboarding() → returns { url } for window.location redirect
+    - listReaders() (placeholder for future reader UI)
+
+═══════════════════════════════════════
+SECTION 9 — Wire prototype to real Stripe Terminal Web SDK
+═══════════════════════════════════════
+
+14. artifacts/nuatis-pos dependencies:
+    - @stripe/terminal-js@^0.10
+
+15. artifacts/nuatis-pos/src/lib/api/stripe.ts:
+    - getConnectionToken() → calls /v1/stripe/terminal/connection-token
+    - Re-exports needed types
+
+16. artifacts/nuatis-pos/src/components/StripeTerminalProvider.tsx (client):
+    - Initializes Terminal instance via @stripe/terminal-js loadStripeTerminal
+    - onFetchConnectionToken callback hits getConnectionToken
+    - Uses simulated reader for dev (Terminal SDK provides this via discoverReaders({ simulated: true }))
+    - Auto-discovers + connects to simulated reader on mount
+    - Provides Terminal instance via React Context
+
+17. Update prototype payment flow:
+    - Method selector: existing cash + card_mock; ADD card_stripe button
+    - When user picks card_stripe:
+      * Call POST /v1/orders/:id/payments with method='card_stripe' → returns payment_intent.client_secret
+      * Call terminal.collectPaymentMethod(client_secret) → simulated reader prompts
+      * Call terminal.processPayment(paymentIntent) → finalizes
+      * Wait for /v1/payment:{order_id} Realtime broadcast confirming success (or poll order status as fallback)
+      * Show Approved screen
+    - Error handling: if Stripe Terminal returns error, surface to user with retry button + ability to fall back to card_mock
+
+18. Stripe configuration banner in prototype:
+    - At sign-in screen, show "Demo: real Stripe Terminal disabled (simulated reader)" if STRIPE_SECRET_KEY is unconfigured
+
+═══════════════════════════════════════
+SECTION 10 — Tests
+═══════════════════════════════════════
+
+19. apps/pos-api/src/routes/stripe/webhook.test.ts:
+    - Skip-graceful integration tests: webhook signature verification, account.updated handler, payment_intent.succeeded full flow
+    - Unit tests (always run): idempotency dedup logic; webhook signature failure returns 400 with empty body
+
+20. apps/pos-api/src/routes/stripe/onboarding.test.ts:
+    - Skip-graceful: full onboarding URL generation
+    - Unit: 503 when STRIPE_SECRET_KEY absent
+
+21. apps/pos-api/src/routes/orders/refunds.test.ts:
+    - Skip-graceful: cash refund creates cash_event; card_stripe refund calls Stripe
+    - Unit: manager_pin guard for refund endpoint
+
+═══════════════════════════════════════
+SECTION 11 — Documentation + commit
+═══════════════════════════════════════
+
+22. apps/pos-api/README.md routes table:
+    - POST /v1/stripe/onboarding/start
+    - GET /v1/stripe/onboarding/status
+    - POST /v1/stripe/terminal/connection-token
+    - GET /v1/stripe/terminal/readers
+    - POST /v1/webhooks/stripe (NO auth, signature-verified)
+    - POST /v1/payments/:payment_id/refund
+   
+23. Add a "Stripe Setup" section to root README.md:
+    - Sign up for Stripe, switch to test mode
+    - Create platform account
+    - Enable Connect (Standard accounts)
+    - Enable Terminal
+    - Create webhook endpoint pointed at your local + production URLs
+    - Copy keys to .env files
+
+24. Update apps/pos-admin/README.md /settings entry: now includes Payments section.
+
+25. From root: pnpm install (stripe in pos-api, @stripe/terminal-js in artifacts), pnpm -F @nuatis/pos-shared build, typecheck all 3 apps, run pos-api tests.
+
+26. Commit + push:
+    - git add .
+    - git commit -m "feat(stripe): connect onboarding + real PaymentIntents + Terminal Web SDK + webhooks + refunds"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add real production keys (test mode only this batch)
+- Do NOT add physical reader pairing (simulated reader only — physical pairing in pilot prep)
+- Do NOT add Tap-to-Pay-on-iPhone (P9 native app territory)
+- Do NOT add card_not_present / card-on-file flows
+- Do NOT add Stripe Issuing (that's a different product)
+- Do NOT add Stripe Subscriptions (Phase 13 memberships)
+- Do NOT add multi-currency support (USD only)
+- Do NOT add 3DS / SCA flows (card_present is exempt for in-person)
+- Do NOT add disputes/chargeback handling (manual via Stripe dashboard for MVP)
+- Do NOT add receipt-on-card (Stripe email receipts) — we have our own
+- Do NOT touch staff/menu/cash/reports/audit endpoints
+- Do NOT add admin UI for refunds (refunds initiated via order drawer "Refund" button — minor add to OrderDrawer if needed; otherwise admin sees existing refund column in order detail)
+- Do NOT add UI for application_fee_bps configuration (set via DB or future settings page)
+
+TECH CONSTRAINTS
+- Stripe SDK v17+ with TypeScript
+- @stripe/terminal-js for prototype (NOT terminal-react-native — that's P9)
+- Webhook endpoint MUST verify signature with raw body (not parsed JSON)
+- Idempotency via Stripe event.id + audit_log lookup
+- All money via Stripe is integer cents (matches our DB)
+- Connect Standard model: on_behalf_of + transfer_data.destination = tenant.stripe_account_id
+- application_fee_amount: Math.floor of (amount * bps / 10000)
+- Refund proportional fee reversal: pass refund_application_fee=true to Stripe
+- Webhook handler must always return 200 (Stripe will retry on 5xx for 72 hours)
+- Real-time broadcast on `payment:{order_id}` channel after webhook (so prototype's Tap-to-Pay advances without polling)
+- Express routers IRouter annotation
+- Workspace deps via 'workspace:*'
+- Terminal Web SDK simulated reader: terminal.discoverReaders({ simulated: true })
+- ESM NodeNext .js suffix on imports
+
+ACCEPTANCE
+1. Migration 0015 file exists with stripe_account_id + payment fields; migrations 0001-0014 untouched
+2. apps/pos-api/src/lib/stripe.ts exists with singleton + helpers + mock-mode fallback
+3. POST /v1/stripe/onboarding/start works (mock mode returns 503 with clear message; real mode creates account + link)
+4. POST /v1/orders/:id/payments with method='card_stripe' creates PaymentIntent and returns client_secret
+5. Webhook endpoint at POST /v1/webhooks/stripe verifies signature; rejects unsigned with 400
+6. Webhook idempotency: same event.id processed twice = single audit_log entry
+7. Webhook handler updates payment status + order status correctly on payment_intent.succeeded
+8. Refund endpoint works for cash + card_mock + card_stripe (mock mode for stripe)
+9. /settings page shows Payments card with correct state (not started / in progress / ready)
+10. Prototype dependency @stripe/terminal-js installed; StripeTerminalProvider wraps app
+11. Prototype card_stripe payment path implemented (calls POST /v1/orders/:id/payments, then collectPaymentMethod via simulated reader)
+12. pnpm typecheck across all 3 apps → 0 errors
+13. pnpm test → preserves baseline + new stripe/webhook/refund unit tests pass; integration tests skip-graceful
+14. git status clean, commit pushed
+
+HARD STOP
+Stop after scope. Report:
+- Migration 0015 delta summary
+- File counts (pos-api, pos-admin, prototype, pos-shared)
+- Test counts (pass / skip / fail) — expected ~140 pass + ~55 skip
+- TS workarounds (especially around Stripe SDK types — they're complex; @stripe/terminal-js types are sometimes thin)
+- Webhook ordering: confirm raw body parser registered before express.json
+- Idempotency: confirm event.id dedup logic is sound (single audit_log entry per Stripe event)
+- Confirm migrations 0001-0014 untouched
+- Confirm artifacts/ touched only for Stripe Terminal Web SDK wiring (no other prototype changes)
+- Open questions for Batch 18 (deployment + observability — Vercel for pos-admin; pos-api on Replit Deployment vs Azure Container Apps; Sentry DSN setup; production .env management; Stripe LIVE mode switchover; first pilot cafe identification)
+
+Wait for next prompt.

@@ -18,6 +18,10 @@ import { receiptHistoryRouter } from "./routes/receipts/history.js";
 import { locationsRouter } from "./routes/locations/index.js";
 import { staffRouter } from "./routes/staff/staff.js";
 import { settingsRouter } from "./routes/settings/index.js";
+import { webhookRouter } from "./routes/stripe/webhook.js";
+import { onboardingRouter as stripeOnboardingRouter } from "./routes/stripe/onboarding.js";
+import { terminalRouter } from "./routes/stripe/terminal.js";
+import { refundsRouter } from "./routes/orders/refunds.js";
 import { startReceiptEmailWorker } from "./workers/receipt-email.js";
 import { startReceiptSmsWorker } from "./workers/receipt-sms.js";
 import { startEodRollupWorker } from "./workers/end-of-day-rollup.js";
@@ -53,6 +57,15 @@ app.use(
     genReqId: (req) => (req as express.Request).reqId ?? "",
   })
 );
+
+// ---------------------------------------------------------------------------
+// IMPORTANT: Stripe webhook MUST be mounted BEFORE express.json().
+// The webhook handler uses express.raw() internally so it can access the raw
+// request body for Stripe signature verification. Once express.json() runs,
+// the raw buffer is discarded and signature verification fails.
+// ---------------------------------------------------------------------------
+app.use("/v1/webhooks/stripe", webhookRouter);
+
 app.use(express.json({ limit: "1mb" }));
 
 // Routes
@@ -67,8 +80,13 @@ app.use("/v1/locations", locationsRouter);
 app.use("/v1/staff", staffRouter);
 app.use("/v1/receipts", receiptHistoryRouter);
 app.use("/v1/settings", settingsRouter);
+app.use("/v1/payments", refundsRouter);
 // Public receipt view — no auth, signed token required
 app.use("/r", receiptViewRouter);
+
+// Stripe — Connect onboarding + Terminal + webhooks
+app.use("/v1/stripe/onboarding", stripeOnboardingRouter);
+app.use("/v1/stripe/terminal", terminalRouter);
 
 // Error handler — must be last
 app.use(errorHandler);

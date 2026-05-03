@@ -3,6 +3,7 @@ import { fmt, calcTipFromPct, calcGrandTotal } from "@/lib/tipMath";
 import type { CartLine, CartTotals } from "@/hooks/useCart";
 
 export type TipOption = "15" | "18" | "20" | "custom" | "none";
+export type PaymentMethodOption = "card_mock" | "card_stripe";
 
 interface Props {
   lines: CartLine[];
@@ -13,6 +14,9 @@ interface Props {
   onOpenKeypad: () => void;
   onBack: () => void;
   onCharge: () => void;
+  paymentMethod?: PaymentMethodOption;
+  onPaymentMethodChange?: (m: PaymentMethodOption) => void;
+  stripeReady?: boolean;
 }
 
 const TIP_PRESETS: Array<{ key: TipOption; pct: number; label: string }> = [
@@ -38,6 +42,9 @@ export function CheckoutOverlay({
   onOpenKeypad,
   onBack,
   onCharge,
+  paymentMethod = "card_mock",
+  onPaymentMethodChange,
+  stripeReady = false,
 }: Props) {
   const tipAmount = getTipAmount(selectedTip, totals.subtotal, customTipAmount);
   const grandTotal = calcGrandTotal(totals.subtotal, totals.tax, tipAmount);
@@ -146,6 +153,52 @@ export function CheckoutOverlay({
               </div>
             </div>
           </section>
+
+          {/* Payment method — only shown when handler provided (Stripe Terminal wired) */}
+          {onPaymentMethodChange && (
+            <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-100">
+                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Payment Method</h3>
+              </div>
+              <div className="px-5 py-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => onPaymentMethodChange("card_mock")}
+                    aria-pressed={paymentMethod === "card_mock"}
+                    className={`
+                      flex items-center gap-2 px-4 py-3 rounded-xl border-2 text-sm font-medium transition-all duration-100
+                      ${paymentMethod === "card_mock"
+                        ? "border-brand bg-brand/5 text-brand"
+                        : "border-slate-200 text-slate-600 hover:border-slate-300"}
+                    `}
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" />
+                    </svg>
+                    Mock Card
+                  </button>
+                  <button
+                    onClick={() => onPaymentMethodChange("card_stripe")}
+                    aria-pressed={paymentMethod === "card_stripe"}
+                    disabled={!stripeReady}
+                    className={`
+                      flex items-center gap-2 px-4 py-3 rounded-xl border-2 text-sm font-medium transition-all duration-100
+                      ${paymentMethod === "card_stripe"
+                        ? "border-brand bg-brand/5 text-brand"
+                        : "border-slate-200 text-slate-600 hover:border-slate-300"}
+                      disabled:opacity-40 disabled:cursor-not-allowed
+                    `}
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
+                    Stripe Terminal
+                    {!stripeReady && <span className="ml-auto text-[10px] text-slate-400 shrink-0">Not ready</span>}
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
         </div>
       </div>
 
@@ -172,7 +225,9 @@ export function CheckoutOverlay({
               transition-colors duration-100
             "
           >
-            Tap to Pay ${fmt(grandTotal)}
+            {paymentMethod === "card_stripe"
+              ? `Pay via Terminal $${fmt(grandTotal)}`
+              : `Tap to Pay $${fmt(grandTotal)}`}
           </button>
         </div>
       </div>

@@ -5,12 +5,21 @@ interface Props {
   grandTotal: number;
   onApproved: () => void;
   onCancel: () => void;
+  /**
+   * When true, disables the 2500ms auto-approval timer.
+   * Use for card_stripe flow where approval is driven by the Stripe Terminal SDK.
+   */
+  noAutoApprove?: boolean;
+  /** Custom subtitle shown below the main label. Defaults to "Processing payment…" */
+  subtitle?: string;
 }
 
-export function TapToPayScreen({ grandTotal, onApproved, onCancel }: Props) {
+export function TapToPayScreen({ grandTotal, onApproved, onCancel, noAutoApprove, subtitle }: Props) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (noAutoApprove) return;
+
     timerRef.current = setTimeout(() => {
       onApproved();
     }, 2500);
@@ -21,7 +30,7 @@ export function TapToPayScreen({ grandTotal, onApproved, onCancel }: Props) {
         timerRef.current = null;
       }
     };
-  }, [onApproved]);
+  }, [onApproved, noAutoApprove]);
 
   return (
     <div className="fixed inset-0 z-40 bg-slate-900 flex flex-col items-center justify-center">
@@ -42,7 +51,7 @@ export function TapToPayScreen({ grandTotal, onApproved, onCancel }: Props) {
       </div>
 
       <p className="text-slate-300 text-base mb-1">Present card to reader</p>
-      <p className="text-slate-500 text-sm mb-12">Processing payment…</p>
+      <p className="text-slate-500 text-sm mb-12">{subtitle ?? "Processing payment…"}</p>
 
       <button
         onClick={onCancel}

@@ -3,6 +3,8 @@
 import { useState } from "react";
 import type { SettingsData } from "@/lib/api/settings";
 import { updateTenantSettings, updateLocationSettings } from "@/lib/api/settings";
+import type { StripeStatus } from "@/lib/api/stripe";
+import { startStripeOnboarding } from "@/lib/api/stripe";
 
 const TIMEZONES = [
   { value: "America/Chicago", label: "Central (CT)" },
@@ -18,6 +20,7 @@ interface SettingsPageProps {
   data: SettingsData;
   posJwt: string;
   userRole: "owner" | "manager";
+  stripeStatus?: StripeStatus | null;
 }
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -50,6 +53,110 @@ function SaveButton({ loading, disabled }: { loading: boolean; disabled?: boolea
     >
       {loading ? "Saving…" : "Save"}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stripe Connect section
+// ---------------------------------------------------------------------------
+function StripeSection({
+  stripeStatus,
+  posJwt,
+  userRole,
+}: {
+  stripeStatus: StripeStatus | null;
+  posJwt: string;
+  userRole: "owner" | "manager";
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isOwner = userRole === "owner";
+
+  const chargesEnabled = stripeStatus?.charges_enabled ?? false;
+  const payoutsEnabled = stripeStatus?.payouts_enabled ?? false;
+  const hasAccount = Boolean(stripeStatus?.stripe_account_id);
+  const requirementsDue = stripeStatus?.requirements_currently_due ?? [];
+
+  const isReady = chargesEnabled && payoutsEnabled;
+  const isInProgress = hasAccount && !isReady;
+
+  async function handleConnect() {
+    setError(null);
+    setLoading(true);
+    try {
+      const { url } = await startStripeOnboarding(posJwt);
+      window.location.href = url;
+    } catch (err: unknown) {
+      setError((err as Error).message ?? "Failed to start Stripe onboarding");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <SectionCard title="Payments">
+      {/* Status banner */}
+      {isReady && (
+        <div className="mb-4 flex items-center gap-3 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3">
+          <svg className="w-5 h-5 text-emerald-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+          </svg>
+          <div>
+            <p className="text-sm font-semibold text-emerald-800">Stripe connected</p>
+            <p className="text-xs text-emerald-600">Card payments and payouts are enabled</p>
+          </div>
+        </div>
+      )}
+
+      {isInProgress && (
+        <div className="mb-4 flex items-start gap-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
+          <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+          </svg>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-800">Stripe onboarding incomplete</p>
+            {requirementsDue.length > 0 && (
+              <p className="text-xs text-amber-600 mt-0.5">
+                Pending: {requirementsDue.slice(0, 3).join(", ")}
+                {requirementsDue.length > 3 && ` +${requirementsDue.length - 3} more`}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!hasAccount && (
+        <div className="mb-4 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+          <p className="text-sm text-slate-600">Connect your Stripe account to accept card payments via Stripe Terminal.</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">{error}</div>
+      )}
+
+      {!isOwner && (
+        <p className="text-xs text-slate-500">Only owners can connect or update the Stripe account.</p>
+      )}
+
+      {isOwner && !isReady && (
+        <button
+          onClick={() => void handleConnect()}
+          disabled={loading}
+          className="mt-2 inline-flex items-center gap-2 rounded-lg bg-[#635BFF] px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+        >
+          {loading ? "Redirecting…" : (
+            <>
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305Z"/>
+              </svg>
+              {hasAccount ? "Resume Stripe Onboarding" : "Connect Stripe"}
+            </>
+          )}
+        </button>
+      )}
+    </SectionCard>
   );
 }
 
@@ -272,13 +379,15 @@ function LocationSection({
   );
 }
 
-export function SettingsPage({ data, posJwt, userRole }: SettingsPageProps) {
+export function SettingsPage({ data, posJwt, userRole, stripeStatus }: SettingsPageProps) {
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="font-serif text-3xl font-bold text-slate-900">Settings</h1>
         <p className="mt-1 text-sm text-slate-500">Manage your business details, locations, and delivery preferences.</p>
       </div>
+
+      <StripeSection stripeStatus={stripeStatus ?? null} posJwt={posJwt} userRole={userRole} />
 
       <TenantSection tenant={data.tenant} posJwt={posJwt} userRole={userRole} />
 

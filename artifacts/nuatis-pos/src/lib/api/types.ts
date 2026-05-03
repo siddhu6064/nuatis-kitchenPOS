@@ -70,6 +70,8 @@ export interface PaymentApiResponse {
     tax_cents: number;
     total_cents: number;
   };
+  /** Present only for card_stripe payments — pass to terminal.collectPaymentMethod() */
+  client_secret?: string;
 }
 
 // ---------------------------------------------------------------------------

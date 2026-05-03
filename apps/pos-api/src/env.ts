@@ -25,6 +25,15 @@ const envSchema = z.object({
   TELNYX_FROM_NUMBER: z.string().min(1).optional(),
   RECEIPT_BASE_URL: z.string().url().default("http://localhost:3002"),
   RECEIPT_TOKEN_SECRET: z.string().min(1).optional(),
+
+  // ---------------------------------------------------------------------------
+  // Stripe Connect + Terminal — all optional; routes return 503 in mock mode
+  // ---------------------------------------------------------------------------
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  STRIPE_PLATFORM_ACCOUNT_ID: z.string().min(1).optional(),
+  STRIPE_CONNECT_RETURN_URL: z.string().url().optional(),
+  STRIPE_CONNECT_REFRESH_URL: z.string().url().optional(),
 });
 
 const result = envSchema.safeParse(process.env);
@@ -52,4 +61,7 @@ if (!env.RESEND_API_KEY) {
 }
 if (!env.TELNYX_API_KEY) {
   console.warn("[env] TELNYX_API_KEY not set — SMS delivery in mock mode");
+}
+if (!env.STRIPE_SECRET_KEY) {
+  console.warn("[env] STRIPE_SECRET_KEY not set — Stripe integration in mock mode");
 }
