@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { bootLogger } from "./lib/boot-logger.js";
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(3002),
@@ -34,34 +35,34 @@ const envSchema = z.object({
   STRIPE_PLATFORM_ACCOUNT_ID: z.string().min(1).optional(),
   STRIPE_CONNECT_RETURN_URL: z.string().url().optional(),
   STRIPE_CONNECT_REFRESH_URL: z.string().url().optional(),
+
+  // ---------------------------------------------------------------------------
+  // Error monitoring — optional; Sentry is disabled when DSN is absent
+  // ---------------------------------------------------------------------------
+  SENTRY_DSN: z.string().url().optional(),
 });
 
 const result = envSchema.safeParse(process.env);
 
 if (!result.success) {
-  console.error(
-    "[env] Invalid environment variables:\n",
-    result.error.flatten().fieldErrors
-  );
+  bootLogger.error("[env] Invalid environment variables", result.error.flatten().fieldErrors);
   process.exit(1);
 }
 
 export const env = result.data;
 
 if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn(
-    "[env] Supabase not configured — /v1/health will report supabase: not_configured"
-  );
+  bootLogger.warn("[env] Supabase not configured — db: mock");
 }
 if (!env.UPSTASH_REDIS_URL) {
-  console.warn("[env] UPSTASH_REDIS_URL not set — receipt workers in mock mode");
+  bootLogger.warn("[env] UPSTASH_REDIS_URL not set — receipt workers in mock mode");
 }
 if (!env.RESEND_API_KEY) {
-  console.warn("[env] RESEND_API_KEY not set — email delivery in mock mode");
+  bootLogger.warn("[env] RESEND_API_KEY not set — email delivery in mock mode");
 }
 if (!env.TELNYX_API_KEY) {
-  console.warn("[env] TELNYX_API_KEY not set — SMS delivery in mock mode");
+  bootLogger.warn("[env] TELNYX_API_KEY not set — SMS delivery in mock mode");
 }
 if (!env.STRIPE_SECRET_KEY) {
-  console.warn("[env] STRIPE_SECRET_KEY not set — Stripe integration in mock mode");
+  bootLogger.warn("[env] STRIPE_SECRET_KEY not set — Stripe integration in mock mode");
 }

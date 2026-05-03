@@ -47,7 +47,8 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - Stripe webhook mounted BEFORE express.json() for raw body access; all Stripe vars optional → mock mode
 - All external services (Upstash Redis, Resend, Telnyx, Stripe) optional — graceful mock mode
 - **Batch 18** added: `GET /v1/terminals`, `POST /v1/terminals/register` (owner/manager only; real mode validates reader against Connect account; mock mode accepts blindly); webhook-dedup unit tests (2 new tests); refund contract tests (2 new tests)
-- **152 tests passing** (57 skip without Supabase, 1 todo) across 24 test files
+- **Batch 19** added: Sentry instrumentation (`@sentry/node`); boot-time structured JSON logger (`src/lib/boot-logger.ts`, zero deps); health endpoint rewritten to env-presence flags (no outbound calls); `SENTRY_DSN` optional field added to env schema; `.env.example` fully documented with all 17 env vars
+- **158 tests passing** (57 skip without Supabase, 1 todo) across 25 test files
 
 ### pos-shared (`packages/pos-shared`)
 - Composite TypeScript library — Zod schemas shared between pos-api and pos-admin
@@ -63,6 +64,7 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - Next.js 14 App Router, Auth.js v5, Tailwind v3, React Query v5, Radix UI
 - Stack: session JWT (`posJwt`, `role`) stored in Auth.js session; server components prefetch → client React Query re-hydrates
 - Session user has `role: "owner" | "manager"` and `posJwt: string`
+- **Batch 19** added: `@sentry/nextjs` instrumentation (client/server/edge config files); `next.config.mjs` wrapped with `withSentryConfig` (source maps disabled, no auth token needed); `vercel.json` with framework hint + build command; `.env.example` updated with Sentry vars; Deployment section added to README
 - **Pages**: dashboard, menu, orders, cash, reports, **staff** (B16), **receipts** (B16), **settings** (B16), **devices** (B18)
 - **Staff page**: table with role/status badges, active toggle (self-deactivate + last-owner guard), Invite/Edit dialog
 - **Receipts page**: paginated email+SMS history, channel/status filters, click-to-copy provider ID, resend button
@@ -109,6 +111,15 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Admin frontend**: Settings → Payments shows Connect button (owner-only), status badge (ready/incomplete/not started)
 - **Mock mode** (no STRIPE_SECRET_KEY): payment_intent IDs use `pi_mock_*` prefix; terminal always reports `isReady: false`
 - **Env vars**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PLATFORM_ACCOUNT_ID`, `STRIPE_CONNECT_RETURN_URL`, `STRIPE_CONNECT_REFRESH_URL`
+
+## Important Constraints
+
+## Sentry Integration (Batch 19)
+
+- **pos-api**: `@sentry/node` — `src/lib/sentry.ts` initializes on module load when `SENTRY_DSN` is set; no-op when absent. Error handler captures exceptions with `tenant_id`/`user_id` scope via `Sentry.withScope()`. Only 5xx errors are reported.
+- **pos-admin**: `@sentry/nextjs` — `sentry.client.config.ts` (reads `NEXT_PUBLIC_SENTRY_DSN`), `sentry.server.config.ts`, `sentry.edge.config.ts` (both read `SENTRY_DSN`). `next.config.mjs` wrapped with `withSentryConfig`. Source map upload disabled (add `SENTRY_AUTH_TOKEN` post-deploy to enable).
+- **Boot-time logger**: `apps/pos-api/src/lib/boot-logger.ts` — zero-dep, emits `{ts, level, msg, ...ctx}` JSON to stderr in production, prefixed text in dev. Used by `env.ts` for startup warnings. Main request logger remains pino (already emits JSON in production).
+- **Health endpoint**: `GET /v1/health` returns `{ok, version, timestamp, services: {db, redis, stripe, resend, telnyx, sentry}}` — each flag is `"configured"` or `"mock"` based on env var presence. No outbound connections, responds in <10 ms.
 
 ## Important Constraints
 

@@ -2,45 +2,33 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { getSupabaseClient } from "../lib/supabase.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
   readFileSync(join(__dirname, "../../package.json"), "utf-8")
 ) as { version: string };
 
-const startedAt = Date.now();
+type ServiceStatus = "configured" | "mock";
+
+function flag(envVar: string | undefined): ServiceStatus {
+  return envVar ? "configured" : "mock";
+}
 
 export const healthRouter: IRouter = Router();
 
-healthRouter.get("/health", async (_req: Request, res: Response) => {
-  const client = getSupabaseClient();
-
-  let supabaseStatus: "connected" | "disconnected" | "not_configured";
-
-  if (!client) {
-    supabaseStatus = "not_configured";
-  } else {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1000);
-      const { error } = await client
-        .from("tenants")
-        .select("id")
-        .limit(1)
-        .abortSignal(controller.signal);
-      clearTimeout(timeout);
-      supabaseStatus = error ? "disconnected" : "connected";
-    } catch {
-      supabaseStatus = "disconnected";
-    }
-  }
-
+// No outbound calls — env-presence checks only so the endpoint is always fast.
+healthRouter.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({
-    status: "ok",
-    supabase: supabaseStatus,
-    uptime_ms: Date.now() - startedAt,
+    ok: true,
     version: pkg.version,
     timestamp: new Date().toISOString(),
+    services: {
+      db:     flag(process.env["SUPABASE_URL"]),
+      redis:  flag(process.env["UPSTASH_REDIS_URL"]),
+      stripe: flag(process.env["STRIPE_SECRET_KEY"]),
+      resend: flag(process.env["RESEND_API_KEY"]),
+      telnyx: flag(process.env["TELNYX_API_KEY"]),
+      sentry: flag(process.env["SENTRY_DSN"]),
+    },
   });
 });

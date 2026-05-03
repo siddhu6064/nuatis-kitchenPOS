@@ -1,0 +1,12 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "pnpm --filter @nuatis/pos-admin run build",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "env": {
+    "AUTH_SECRET": "Your Auth.js session secret — generate with: openssl rand -base64 32",
+    "NEXTAUTH_SECRET": "Same value as AUTH_SECRET (Auth.js v5 alias)",
+    "POS_API_URL": "Server-to-server base URL for pos-api, e.g. https://api.your-domain.com",
+    "SENTRY_DSN": "(optional) Sentry DSN for server-side error capture",
+    "NEXT_PUBLIC_SENTRY_DSN": "(optional) Sentry DSN exposed to the browser"
+  }
+}

@@ -1,4 +1,5 @@
 import "./env.js"; // validate env on boot — must be first
+import "./lib/sentry.js"; // initialize Sentry (no-op when SENTRY_DSN is absent)
 import express from "express";
 import cors from "cors";
 import { pinoHttp } from "pino-http";

@@ -79,8 +79,60 @@ On success, the sign-up page auto-signs-in via `signIn('credentials', ...)`.
 
 ## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `NEXTAUTH_SECRET` | Secret for Auth.js JWT signing (openssl rand -base64 32) |
-| `AUTH_SECRET` | Same as NEXTAUTH_SECRET (Auth.js v5 alias) |
-| `POS_API_URL` | pos-api base URL, server-to-server (default: http://localhost:3002) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXTAUTH_SECRET` | Yes | Auth.js JWT signing secret (`openssl rand -base64 32`) |
+| `AUTH_SECRET` | Yes | Same as `NEXTAUTH_SECRET` (Auth.js v5 alias — both must be set) |
+| `POS_API_URL` | Yes | pos-api base URL, server-to-server (default: `http://localhost:3002`) |
+| `NEXTAUTH_URL` | Dev only | Full base URL of this app (Vercel sets this automatically in production) |
+| `SENTRY_DSN` | No | Sentry DSN for server-side error capture |
+| `NEXT_PUBLIC_SENTRY_DSN` | No | Sentry DSN exposed to the browser (same value as `SENTRY_DSN`) |
+
+## Deployment (Vercel)
+
+### Prerequisites
+
+1. **pos-api deployed** — the admin is a thin Next.js front-end that proxies all data requests to pos-api. Deploy pos-api first and note its public URL.
+2. **Sentry project** (optional) — create a project at [sentry.io](https://sentry.io) and copy the DSN.
+
+### Steps
+
+```bash
+# 1. Install Vercel CLI (once)
+npm i -g vercel
+
+# 2. Link the project (run from repo root)
+vercel link
+
+# 3. Set required environment variables in the Vercel dashboard:
+#    Project → Settings → Environment Variables
+#
+#    AUTH_SECRET          = $(openssl rand -base64 32)
+#    NEXTAUTH_SECRET      = same value as AUTH_SECRET
+#    POS_API_URL          = https://your-pos-api-domain.com
+#
+#    Optional:
+#    SENTRY_DSN           = https://...@...ingest.sentry.io/...
+#    NEXT_PUBLIC_SENTRY_DSN = same value as SENTRY_DSN
+
+# 4. Deploy
+vercel --prod
+```
+
+### Build settings (via vercel.json)
+
+The `vercel.json` in this directory sets:
+- **Framework**: Next.js
+- **Build command**: `pnpm --filter @nuatis/pos-admin run build`
+- **Install command**: `pnpm install --frozen-lockfile`
+
+### Sentry verification
+
+After setting `SENTRY_DSN` and redeploying:
+
+```bash
+# Trigger a test error via the proxy route (replace with your Vercel domain)
+curl -X GET https://your-admin.vercel.app/api/v1/nonexistent-route
+```
+
+Within 30 seconds the event should appear in your Sentry project under **Issues**.
