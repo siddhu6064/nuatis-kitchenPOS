@@ -65,16 +65,17 @@ ordersRouter.get("/:id", requireAuth(), async (req: Request, res: Response): Pro
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = client as any;
 
-  const [orderRes, itemsRes, paymentsRes] = await Promise.all([
+  const [orderRes, itemsRes, paymentsRes, discountsRes] = await Promise.all([
     db.from("orders").select("*").eq("id", req.params["id"]).eq("tenant_id", tenantId).maybeSingle(),
     db.from("order_items").select("*").eq("order_id", req.params["id"]).order("created_at"),
     db.from("payments").select("*").eq("order_id", req.params["id"]).eq("tenant_id", tenantId).order("created_at"),
+    db.from("order_discounts").select("*").eq("order_id", req.params["id"]).eq("tenant_id", tenantId).order("applied_at"),
   ]);
 
   if (!orderRes.data) { res.status(404).json({ error: { code: "not_found", message: "Order not found" } }); return; }
   if (orderRes.error) { res.status(500).json({ error: { code: "internal_error", message: orderRes.error.message } }); return; }
 
-  res.json({ ...orderRes.data, items: itemsRes.data ?? [], payments: paymentsRes.data ?? [] });
+  res.json({ ...orderRes.data, items: itemsRes.data ?? [], payments: paymentsRes.data ?? [], discounts: discountsRes.data ?? [] });
 });
 
 // ---------------------------------------------------------------------------

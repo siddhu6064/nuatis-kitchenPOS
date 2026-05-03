@@ -97,6 +97,25 @@ export const PaymentSchema = z.object({
 export type Payment = z.infer<typeof PaymentSchema>;
 
 // ---------------------------------------------------------------------------
+// OrderDiscount
+// ---------------------------------------------------------------------------
+export const OrderDiscountSchema = z.object({
+  id: uuid,
+  tenant_id: uuid,
+  order_id: uuid,
+  type: z.enum(["pct", "amt"]),
+  value_bps: z.number().int().nullable(),
+  value_cents: z.number().int().nullable(),
+  applied_amount_cents: z.number().int(),
+  applied_by_staff_id: uuid,
+  reason: z.string(),
+  applied_at: isoDate,
+  voided_at: nullableDate,
+  voided_by_staff_id: uuid.nullable(),
+});
+export type OrderDiscount = z.infer<typeof OrderDiscountSchema>;
+
+// ---------------------------------------------------------------------------
 // Request schemas
 // ---------------------------------------------------------------------------
 export const CreateOrderRequestSchema = z.object({
@@ -136,6 +155,22 @@ export const VoidOrderRequestSchema = z.object({
   reason: z.string().min(1).max(500),
 });
 export type VoidOrderRequest = z.infer<typeof VoidOrderRequestSchema>;
+
+export const ApplyDiscountRequestSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("pct"),
+    value: z.number().int().min(1).max(5000),
+    reason: z.string().min(1).max(200),
+    manager_pin: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("amt"),
+    value: z.number().int().min(1),
+    reason: z.string().min(1).max(200),
+    manager_pin: z.string().optional(),
+  }),
+]);
+export type ApplyDiscountRequest = z.infer<typeof ApplyDiscountRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // KDS (Kitchen Display System) — Realtime broadcast event schemas

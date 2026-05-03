@@ -68,16 +68,24 @@ describe("tenantSelect", () => {
 });
 
 describe("recalcOrderTotals", () => {
+  // New call order:
+  //   call 1: from("orders")        → select location_id + tip_cents → maybeSingle
+  //   call 2: from("order_items")   → select price_cents, qty, taxable → awaited directly
+  //   call 3: from("order_discounts")→ select non-voided discounts   → awaited directly
+  //   call 4: from("locations")     → select sales_tax_bps           → maybeSingle
+  //   call 5: from("orders")        → update totals                  → awaited directly
+
   it("sums price_cents * qty for non-voided items and returns subtotal", async () => {
     const items = [
-      { price_cents: 300, qty: 1 },  // 300
-      { price_cents: 450, qty: 2 },  // 900
+      { price_cents: 300, qty: 1, taxable: true },   // 300
+      { price_cents: 450, qty: 2, taxable: true },   // 900
     ];
-    // call 1: select items → returns items array
-    // call 2: update orders → returns {} (ignored)
     const mock = makeMockClientMulti([
-      { data: items, error: null },
-      { data: {}, error: null },
+      { data: { location_id: "loc-1", tip_cents: 0 }, error: null }, // orders fetch
+      { data: items, error: null },                                    // order_items
+      { data: [], error: null },                                       // order_discounts
+      { data: { sales_tax_bps: 825 }, error: null },                  // locations
+      { data: {}, error: null },                                       // orders update
     ]);
 
     const subtotal = await recalcOrderTotals(
@@ -91,8 +99,11 @@ describe("recalcOrderTotals", () => {
 
   it("returns 0 when no non-voided items exist", async () => {
     const mock = makeMockClientMulti([
-      { data: [], error: null },
-      { data: {}, error: null },
+      { data: { location_id: "loc-1", tip_cents: 0 }, error: null }, // orders fetch
+      { data: [], error: null },                                       // order_items (empty)
+      { data: [], error: null },                                       // order_discounts
+      { data: { sales_tax_bps: 825 }, error: null },                  // locations
+      { data: {}, error: null },                                       // orders update
     ]);
 
     const subtotal = await recalcOrderTotals(
@@ -106,8 +117,11 @@ describe("recalcOrderTotals", () => {
 
   it("filters by order_id (neq voided) on items query", async () => {
     const mock = makeMockClientMulti([
-      { data: [{ price_cents: 500, qty: 1 }], error: null },
-      { data: {}, error: null },
+      { data: { location_id: "loc-1", tip_cents: 0 }, error: null }, // orders fetch
+      { data: [{ price_cents: 500, qty: 1, taxable: true }], error: null }, // order_items
+      { data: [], error: null },                                       // order_discounts
+      { data: { sales_tax_bps: 825 }, error: null },                  // locations
+      { data: {}, error: null },                                       // orders update
     ]);
 
     await recalcOrderTotals(
@@ -116,10 +130,10 @@ describe("recalcOrderTotals", () => {
       "tenant-xyz"
     );
 
-    // First from() call should be on order_items
+    // Second from() call (index 1) should be order_items with correct filters
     expect(mock.from).toHaveBeenCalledWith("order_items");
-    expect(mock._chains[0]!.eq).toHaveBeenCalledWith("order_id", "order-xyz");
-    expect(mock._chains[0]!.neq).toHaveBeenCalledWith("status", "voided");
+    expect(mock._chains[1]!.eq).toHaveBeenCalledWith("order_id", "order-xyz");
+    expect(mock._chains[1]!.neq).toHaveBeenCalledWith("status", "voided");
   });
 });
 

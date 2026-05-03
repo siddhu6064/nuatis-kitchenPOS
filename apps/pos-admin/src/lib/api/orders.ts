@@ -1,4 +1,4 @@
-import type { Order, OrderItem, Payment } from "@nuatis/pos-shared";
+import type { Order, OrderItem, Payment, OrderDiscount } from "@nuatis/pos-shared";
 
 const CLIENT_API = "/api/v1";
 
@@ -16,6 +16,8 @@ export interface AuditEntry {
 export interface OrderDetail extends Order {
   items: OrderItem[];
   payments: Payment[];
+  discounts: OrderDiscount[];
+  discount_total_cents: number;
 }
 
 async function apiFetch<T>(
@@ -124,4 +126,33 @@ export async function refundPayment(
     method: "POST",
     body: JSON.stringify({ reason }),
   });
+}
+
+export interface DiscountResult extends OrderDetail {}
+
+export async function applyDiscount(
+  posJwt: string,
+  orderId: string,
+  body: { type: "pct" | "amt"; value: number; reason: string; manager_pin: string }
+): Promise<DiscountResult> {
+  return apiFetch<DiscountResult>(`/orders/${orderId}/discount`, posJwt, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function voidDiscount(
+  posJwt: string,
+  orderId: string,
+  applicationId: string,
+  manager_pin: string
+): Promise<DiscountResult> {
+  return apiFetch<DiscountResult>(
+    `/orders/${orderId}/discount/${applicationId}/void`,
+    posJwt,
+    {
+      method: "POST",
+      body: JSON.stringify({ manager_pin }),
+    }
+  );
 }

@@ -7,6 +7,7 @@ import { paymentsRouter } from "./payments.js";
 import { voidRouter } from "./void.js";
 import { receiptSendRouter } from "../receipts/index.js";
 import { auditTrailRouter } from "./audit-trail.js";
+import { orderDiscountsRouter } from "./discounts.js";
 
 const ordersBarrel: IRouter = Router();
 
@@ -21,5 +22,6 @@ ordersBarrel.use("/:id/payments", paymentsRouter);
 ordersBarrel.use("/:id/void", voidRouter);
 ordersBarrel.use("/:id/receipts", receiptSendRouter);
 ordersBarrel.use("/:id/audit-trail", auditTrailRouter);
+ordersBarrel.use("/:id/discount", orderDiscountsRouter);
 
 export { ordersBarrel as ordersRouter };

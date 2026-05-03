@@ -29,7 +29,7 @@ orderItemsRouter.post("/", requireAuth(), async (req: Request, res: Response): P
   if (order.status !== "open") { res.status(409).json({ error: { code: "conflict", message: `Order is ${order.status as string} — cannot add items` } }); return; }
 
   // Validate menu_item belongs to tenant
-  const { data: menuItem, error: itemErr } = await db.from("menu_items").select("id, name, price_cents, tenant_id").eq("id", parsed.data.menu_item_id).eq("tenant_id", tenantId).is("deleted_at", null).maybeSingle();
+  const { data: menuItem, error: itemErr } = await db.from("menu_items").select("id, name, price_cents, taxable, tenant_id").eq("id", parsed.data.menu_item_id).eq("tenant_id", tenantId).is("deleted_at", null).maybeSingle();
   if (itemErr) { res.status(500).json({ error: { code: "internal_error", message: itemErr.message } }); return; }
   if (!menuItem) { res.status(404).json({ error: { code: "not_found", message: "Menu item not found" } }); return; }
 
@@ -61,6 +61,7 @@ orderItemsRouter.post("/", requireAuth(), async (req: Request, res: Response): P
       name_snapshot: menuItem.name as string,
       qty: parsed.data.quantity,
       price_cents: menuItem.price_cents as number,
+      taxable: (menuItem.taxable as boolean) ?? true,
       modifiers_json: modifiersSnapshot,
       status: "open",
     })

@@ -2,16 +2,19 @@
 
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { X, ChevronDown, ChevronRight, AlertTriangle, RotateCcw } from "lucide-react";
+import { X, ChevronDown, ChevronRight, AlertTriangle, RotateCcw, Tag, XCircle } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Order } from "@nuatis/pos-shared";
+import type { Order, OrderDiscount } from "@nuatis/pos-shared";
 import {
   getOrder,
   getOrderAuditTrail,
   voidOrder,
   refundPayment,
+  applyDiscount,
+  voidDiscount,
   type AuditEntry,
 } from "@/lib/api/orders";
+import { ManagerPinModal } from "@/components/cash/ManagerPinModal";
 
 const CLIENT_API = "/api/v1";
 
@@ -53,6 +56,8 @@ interface Props {
   onVoided: () => void;
 }
 
+type DiscountType = "pct" | "amt";
+
 export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
   const qc = useQueryClient();
   const [auditOpen, setAuditOpen] = useState(false);
@@ -63,6 +68,21 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
   const [refundReason, setRefundReason] = useState("");
   const [refundError, setRefundError] = useState<string | null>(null);
   const [refundSuccess, setRefundSuccess] = useState<string | null>(null);
+
+  // Discount state
+  const [discountDialogOpen, setDiscountDialogOpen] = useState(false);
+  const [discountType, setDiscountType] = useState<DiscountType>("pct");
+  const [discountValue, setDiscountValue] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
+  const [discountError, setDiscountError] = useState<string | null>(null);
+  // PIN state for discount apply
+  const [discountPinOpen, setDiscountPinOpen] = useState(false);
+  const [discountPinError, setDiscountPinError] = useState<string | null>(null);
+  const [pendingDiscountPin, setPendingDiscountPin] = useState<string | null>(null);
+  // PIN state for discount void
+  const [voidDiscountPinOpen, setVoidDiscountPinOpen] = useState(false);
+  const [voidDiscountPinError, setVoidDiscountPinError] = useState<string | null>(null);
+  const [pendingVoidDiscountId, setPendingVoidDiscountId] = useState<string | null>(null);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -100,6 +120,8 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
   const canVoid =
     order?.status === "open" || order?.status === "fired";
   const canRefund = order?.status === "paid" && !!cardPayment;
+  const canDiscount =
+    order?.status === "open" || order?.status === "fired";
 
   const refundMutation = useMutation({
     mutationFn: ({ paymentId, reason }: { paymentId: string; reason: string }) =>
@@ -116,6 +138,61 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
     },
     onError: (err: Error) => {
       setRefundError(err.message);
+    },
+  });
+
+  const applyDiscountMutation = useMutation({
+    mutationFn: ({
+      pin,
+    }: {
+      pin: string;
+    }) => {
+      const val = parseInt(discountValue, 10);
+      return applyDiscount(posJwt, orderId!, {
+        type: discountType,
+        value: discountType === "pct" ? Math.round(val * 100) : Math.round(val * 100),
+        reason: discountReason.trim(),
+        manager_pin: pin,
+      });
+    },
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+      void qc.setQueryData(["order", orderId], result);
+      setDiscountPinOpen(false);
+      setDiscountPinError(null);
+      setPendingDiscountPin(null);
+      setDiscountDialogOpen(false);
+      setDiscountValue("");
+      setDiscountReason("");
+      setDiscountError(null);
+    },
+    onError: (err: Error & { code?: string }) => {
+      if (err.code === "manager_pin_invalid") {
+        setDiscountPinError("Incorrect PIN. Try again.");
+      } else {
+        setDiscountPinOpen(false);
+        setDiscountError(err.message);
+      }
+    },
+  });
+
+  const voidDiscountMutation = useMutation({
+    mutationFn: ({ applicationId, pin }: { applicationId: string; pin: string }) =>
+      voidDiscount(posJwt, orderId!, applicationId, pin),
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+      void qc.setQueryData(["order", orderId], result);
+      setVoidDiscountPinOpen(false);
+      setVoidDiscountPinError(null);
+      setPendingVoidDiscountId(null);
+    },
+    onError: (err: Error & { code?: string }) => {
+      if (err.code === "manager_pin_invalid") {
+        setVoidDiscountPinError("Incorrect PIN. Try again.");
+      } else {
+        setVoidDiscountPinOpen(false);
+        setVoidDiscountPinError(null);
+      }
     },
   });
 
@@ -139,6 +216,46 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
     voidMutation.mutate({ id: orderId, reason: voidReason.trim() });
   }
 
+  function handleDiscountFormSubmit() {
+    setDiscountError(null);
+    const val = parseFloat(discountValue);
+    if (!discountValue || isNaN(val) || val <= 0) {
+      setDiscountError("Enter a valid positive value.");
+      return;
+    }
+    if (discountType === "pct" && val > 50) {
+      setDiscountError("Percentage discount cannot exceed 50%.");
+      return;
+    }
+    if (!discountReason.trim()) {
+      setDiscountError("Reason is required.");
+      return;
+    }
+    if (discountReason.trim().length > 200) {
+      setDiscountError("Reason must be 200 characters or fewer.");
+      return;
+    }
+    // Open PIN modal to collect manager approval
+    setDiscountPinError(null);
+    setDiscountPinOpen(true);
+  }
+
+  function handleDiscountPinSubmit(pin: string) {
+    setPendingDiscountPin(pin);
+    applyDiscountMutation.mutate({ pin });
+  }
+
+  function handleVoidDiscountClick(discountId: string) {
+    setPendingVoidDiscountId(discountId);
+    setVoidDiscountPinError(null);
+    setVoidDiscountPinOpen(true);
+  }
+
+  function handleVoidDiscountPinSubmit(pin: string) {
+    if (!pendingVoidDiscountId) return;
+    voidDiscountMutation.mutate({ applicationId: pendingVoidDiscountId, pin });
+  }
+
   async function handleResendReceipt() {
     if (!orderId) return;
     await fetch(`${CLIENT_API}/orders/${orderId}/receipts`, {
@@ -150,6 +267,8 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
       body: JSON.stringify({ channel: "email" }),
     });
   }
+
+  const activeDiscounts = order?.discounts?.filter((d: OrderDiscount) => !d.voided_at) ?? [];
 
   return (
     <>
@@ -246,6 +365,52 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
                           {fmt(order.subtotal_cents)}
                         </span>
                       </div>
+
+                      {/* Active discount lines */}
+                      {activeDiscounts.map((d: OrderDiscount) => (
+                        <div key={d.id} className="flex items-start justify-between text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-emerald-600 font-medium">
+                              Discount
+                            </span>
+                            <span className="text-slate-400 text-xs ml-1.5">
+                              {d.type === "pct"
+                                ? `${((d.value_bps ?? 0) / 100).toFixed(0)}%`
+                                : fmt(d.value_cents ?? 0)}{" "}
+                              — {d.reason}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-tabular text-emerald-600">
+                              -{fmt(d.applied_amount_cents)}
+                            </span>
+                            {canDiscount && (
+                              <button
+                                onClick={() => handleVoidDiscountClick(d.id)}
+                                className="text-slate-300 hover:text-red-400 transition-colors"
+                                title="Void this discount"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Show voided discounts dimmed */}
+                      {order.discounts
+                        ?.filter((d: OrderDiscount) => !!d.voided_at)
+                        .map((d: OrderDiscount) => (
+                          <div key={d.id} className="flex justify-between text-sm opacity-40">
+                            <span className="line-through text-slate-400">
+                              Discount — {d.reason}
+                            </span>
+                            <span className="font-tabular line-through text-slate-400">
+                              -{fmt(d.applied_amount_cents)}
+                            </span>
+                          </div>
+                        ))}
+
                       <div className="flex justify-between text-sm text-slate-500">
                         <span>Tax</span>
                         <span className="font-tabular">
@@ -374,6 +539,21 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
+                  {canDiscount && (
+                    <button
+                      onClick={() => {
+                        setDiscountValue("");
+                        setDiscountReason("");
+                        setDiscountError(null);
+                        setDiscountType("pct");
+                        setDiscountDialogOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 transition-colors"
+                    >
+                      <Tag className="h-3.5 w-3.5" />
+                      Apply Discount
+                    </button>
+                  )}
                   {canVoid && (
                     <button
                       onClick={() => setVoidDialogOpen(true)}
@@ -403,6 +583,151 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+
+      {/* Apply Discount dialog */}
+      <Dialog.Root
+        open={discountDialogOpen}
+        onOpenChange={(v) => {
+          if (!v) {
+            setDiscountDialogOpen(false);
+            setDiscountValue("");
+            setDiscountReason("");
+            setDiscountError(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/40" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[70] w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl focus:outline-none">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-100">
+                <Tag className="h-4 w-4 text-emerald-600" />
+              </div>
+              <Dialog.Title className="font-serif text-lg font-semibold text-slate-900">
+                Apply Discount
+              </Dialog.Title>
+            </div>
+            <Dialog.Description className="text-sm text-slate-500 mb-4">
+              Manager PIN required. Max 50% off. Reason required for audit log.
+            </Dialog.Description>
+
+            {/* Discount type */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => { setDiscountType("pct"); setDiscountValue(""); }}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  discountType === "pct"
+                    ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Percentage %
+              </button>
+              <button
+                onClick={() => { setDiscountType("amt"); setDiscountValue(""); }}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  discountType === "amt"
+                    ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Fixed Amount $
+              </button>
+            </div>
+
+            {/* Value input */}
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              {discountType === "pct" ? "Percentage (1–50%)" : "Amount ($)"}
+            </label>
+            <div className="relative mb-4">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-medium">
+                {discountType === "pct" ? "%" : "$"}
+              </span>
+              <input
+                type="number"
+                min="0.01"
+                max={discountType === "pct" ? "50" : undefined}
+                step={discountType === "pct" ? "1" : "0.01"}
+                value={discountValue}
+                onChange={(e) => setDiscountValue(e.target.value)}
+                placeholder={discountType === "pct" ? "10" : "5.00"}
+                className="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400"
+                autoFocus
+              />
+            </div>
+
+            {/* Reason */}
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Reason
+            </label>
+            <textarea
+              rows={2}
+              value={discountReason}
+              onChange={(e) => setDiscountReason(e.target.value)}
+              placeholder="e.g. employee comp, senior discount"
+              maxLength={200}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300 focus:border-emerald-400 resize-none mb-1"
+            />
+            <p className="text-xs text-slate-400 mb-4 text-right">
+              {discountReason.length}/200
+            </p>
+
+            {discountError && (
+              <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-600">
+                {discountError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setDiscountDialogOpen(false);
+                  setDiscountValue("");
+                  setDiscountReason("");
+                  setDiscountError(null);
+                }}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDiscountFormSubmit}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors"
+              >
+                Continue →
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Manager PIN modal — for discount apply */}
+      <ManagerPinModal
+        open={discountPinOpen}
+        title="Manager approval required"
+        description="Enter a manager or owner PIN to apply this discount."
+        error={discountPinError}
+        onSubmit={handleDiscountPinSubmit}
+        onClose={() => {
+          setDiscountPinOpen(false);
+          setDiscountPinError(null);
+          setPendingDiscountPin(null);
+        }}
+      />
+
+      {/* Manager PIN modal — for discount void */}
+      <ManagerPinModal
+        open={voidDiscountPinOpen}
+        title="Void discount"
+        description="Enter a manager or owner PIN to remove this discount."
+        error={voidDiscountPinError}
+        onSubmit={handleVoidDiscountPinSubmit}
+        onClose={() => {
+          setVoidDiscountPinOpen(false);
+          setVoidDiscountPinError(null);
+          setPendingVoidDiscountId(null);
+        }}
+      />
 
       {/* Refund confirmation dialog */}
       <Dialog.Root
