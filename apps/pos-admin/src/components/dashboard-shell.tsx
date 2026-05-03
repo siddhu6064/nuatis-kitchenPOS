@@ -11,6 +11,7 @@ import {
   Receipt,
   Settings,
   MonitorSmartphone,
+  ScrollText,
 } from "lucide-react";
 import { LocationSwitcher } from "@/components/location-switcher";
 import { listLocations } from "@/lib/api/orders";
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/staff", label: "Staff", icon: Users },
   { href: "/receipts", label: "Receipts", icon: Receipt },
   { href: "/devices", label: "Devices", icon: MonitorSmartphone },
+  { href: "/audit", label: "Audit", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -24,6 +24,7 @@ import { onboardingRouter as stripeOnboardingRouter } from "./routes/stripe/onbo
 import { terminalRouter } from "./routes/stripe/terminal.js";
 import { terminalsRouter } from "./routes/stripe/terminals.js";
 import { refundsRouter } from "./routes/orders/refunds.js";
+import { auditLogRouter, auditLogCsvRouter } from "./routes/audit-log.js";
 import { startReceiptEmailWorker } from "./workers/receipt-email.js";
 import { startReceiptSmsWorker } from "./workers/receipt-sms.js";
 import { startEodRollupWorker } from "./workers/end-of-day-rollup.js";
@@ -94,6 +95,11 @@ app.use("/v1/settings", settingsRouter);
 app.use("/v1/payments", refundsRouter);
 // Public receipt view — no auth, signed token required
 app.use("/r", receiptViewRouter);
+
+// Audit log — CSV must be mounted before the base path so Express matches
+// "/v1/audit-log.csv" as an exact path before stripping "/v1/audit-log".
+app.use("/v1/audit-log.csv", auditLogCsvRouter);
+app.use("/v1/audit-log", auditLogRouter);
 
 // Stripe — Connect onboarding + Terminal + webhooks
 app.use("/v1/stripe/onboarding", stripeOnboardingRouter);

@@ -11,7 +11,11 @@
  *  - Safe: non-object/array values pass through unchanged
  */
 
-const SENSITIVE: ReadonlySet<string> = new Set([
+/**
+ * Exported as an array so pino can build redact paths from it without
+ * duplicating the list. The Set is derived from this array.
+ */
+export const SENSITIVE_KEYS_ARRAY: ReadonlyArray<string> = [
   "pin",
   "password",
   "password_hash",
@@ -20,7 +24,9 @@ const SENSITIVE: ReadonlySet<string> = new Set([
   "api_key",
   "authorization",
   "cookie",
-]);
+];
+
+const SENSITIVE: ReadonlySet<string> = new Set(SENSITIVE_KEYS_ARRAY);
 
 export function redactSensitive(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
