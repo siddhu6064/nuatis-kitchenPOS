@@ -21,6 +21,7 @@ import { settingsRouter } from "./routes/settings/index.js";
 import { webhookRouter } from "./routes/stripe/webhook.js";
 import { onboardingRouter as stripeOnboardingRouter } from "./routes/stripe/onboarding.js";
 import { terminalRouter } from "./routes/stripe/terminal.js";
+import { terminalsRouter } from "./routes/stripe/terminals.js";
 import { refundsRouter } from "./routes/orders/refunds.js";
 import { startReceiptEmailWorker } from "./workers/receipt-email.js";
 import { startReceiptSmsWorker } from "./workers/receipt-sms.js";
@@ -87,6 +88,7 @@ app.use("/r", receiptViewRouter);
 // Stripe — Connect onboarding + Terminal + webhooks
 app.use("/v1/stripe/onboarding", stripeOnboardingRouter);
 app.use("/v1/stripe/terminal", terminalRouter);
+app.use("/v1/terminals", terminalsRouter);
 
 // Error handler — must be last
 app.use(errorHandler);

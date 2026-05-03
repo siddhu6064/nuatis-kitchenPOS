@@ -1,0 +1,85 @@
+▶ PROMPT [Phase 5 · Batch 18 · Replit Agent]
+
+CONTEXT
+- Batch 17 shipped Stripe Connect onboarding, Terminal SDK (in prototype as testbed), card_stripe
+  PaymentIntent flow, webhook handler, refund endpoint with idempotency, and admin StripeSection.
+- 4 correctness properties from the original P5 spec aren't explicitly confirmed in the B17 report.
+  We need to verify them and fix any gaps before declaring P5 closed.
+- 2 P5 items remain: paired-reader registration endpoint + admin Devices page.
+- Refund API exists with no admin UI to call it — closing that loop is part of this batch.
+
+GOAL
+Close out P5 — verified-correct platform-economics wiring + admin can issue refunds + admin can
+manage paired readers — single demo-able outcome: open admin, paid order, click Refund, see
+proportional application_fee reversed in Stripe dashboard (test mode).
+
+SCOPE — BUILD THIS
+1. Audit createPaymentIntent in apps/pos-api/lib/stripe.ts — confirm it passes
+   application_fee_amount (= floor(amount × tenant.application_fee_bps / 10000)),
+   on_behalf_of: tenant.stripe_account_id, transfer_data.destination: tenant.stripe_account_id.
+   Fix if any missing. Note in commit message which were already correct.
+2. Audit webhook event.id dedup — handler MUST check if event.id was already processed BEFORE
+   side-effects (audit_log lookup OR new idempotency_keys row scoped to webhooks). If duplicate:
+   return 200 immediately, no DB writes. Add the check if missing. Add a unit test that hits
+   the handler twice with the same event.id and asserts only one payment-state mutation.
+3. Audit refund flow — confirm Stripe refund call passes refund_application_fee: true (or
+   equivalent proportional logic). Fix if missing. Stub-test the call args to assert.
+4. Confirm migration 0015 sets tenants.application_fee_bps DEFAULT 0. If the column has no
+   default or a non-zero default, add migration 0016 to fix it.
+5. Add POST /v1/terminals/register — body: { stripe_reader_id, label, location_id }. Owner +
+   manager only. Inserts into stripe_terminal_readers (already exists from B17). In real mode,
+   validate the reader belongs to the tenant's Connect account via Stripe API; in mock mode,
+   accept blindly with a generated last_seen.
+6. Add admin page /devices — server component lists paired readers (label, location, last_seen,
+   status badge); client component "Register New" modal posts to /v1/terminals/register. Same
+   nav pattern + auth gating as /staff. Add nav link in shared admin layout.
+7. Add Refund button to admin Orders drawer — visible only on orders with status='paid' and
+   at least one card payment row. Click → reuse existing manager PIN modal → POST to
+   /v1/payments/:id/refund (use the primary card payment row id). On success: toast + 
+   router.refresh(). Hide on cash-only orders for now (cash refunds = post-MVP).
+
+SCOPE — DO NOT BUILD
+- Partial / line-item refunds (full refund only — partial is post-MVP)
+- Cash refund flow
+- Split-tender (post-MVP, belongs in apps/pos-terminal P9)
+- Admin UI for setting application_fee_bps per tenant (leave column at 0, configure via SQL
+  until pricing is locked post-pilot)
+- Pricing display anywhere in admin (proposed, not locked)
+- Anything new in artifacts/nuatis-pos (prototype is frozen)
+- Renaming /v1/stripe/terminal/connection_token (already shipped, leave it)
+- Sentry, Vercel config, env hygiene (P8 deployment batch)
+
+TECH CONSTRAINTS
+- All money in cents (int); never decimal
+- tenant_id always from req.auth.tenant_id, never body/query
+- Express router annotation: const terminalsRouter: IRouter = Router()
+- ESM NodeNext .js suffix on imports (source is .ts)
+- Manager PIN gate via existing requireManagerPin() middleware on register endpoint
+- Stripe SDK calls gated on STRIPE_SECRET_KEY; mock fallback returns deterministic stub IDs
+- Audit log entries fire-and-forget: terminal_register, refund_create (verify the latter exists)
+- Admin /devices uses Auth.js v5 session, fetches via /api/v1 proxy, client modal for register
+- Post-mutation: router.refresh(), not window.location.reload
+- Refund button uses existing PIN modal component (do not duplicate)
+
+ACCEPTANCE
+- pnpm test passes (148+ tests green; expect 2-3 new tests for dedup + refund stub)
+- pnpm typecheck clean in pos-api, pos-admin, pos-shared
+- Audit reports for items 1-4 captured in commit messages or summary, with diffs if anything
+  was fixed
+- Webhook unit test: same event.id sent twice → only one mutation
+- Refund unit test: stub asserts refund_application_fee: true is passed
+- /devices renders empty state with no readers; register modal opens; submission inserts row
+  and refreshes list
+- Orders drawer Refund button: visible on paid orders only; PIN modal flow works; success
+  toast + drawer refreshes to show refunded status
+
+HARD STOP
+After scope is complete, STOP. Do not offer split-tender, partial refunds, app_fee_bps admin
+UI, or prototype additions. Report:
+- Summary of what shipped + what was already correct
+- Audit results for items 1-4 (pass/fail per item, fixes if any)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.

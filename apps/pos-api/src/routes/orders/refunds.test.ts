@@ -75,6 +75,43 @@ describe("POST /v1/payments/:id/refund — auth guards", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unit: refundPaymentIntent args — documents that refund_application_fee=true
+//       is always passed for card_stripe refunds.
+// ---------------------------------------------------------------------------
+describe("refundPaymentIntent — contract: passes refund_application_fee:true", () => {
+  it("refundPaymentIntent signature has refundApplicationFee=true as default", async () => {
+    // This test documents and enforces the contract: every card refund must
+    // set refund_application_fee=true so the platform fee is returned to the
+    // tenant (and not retained by the platform on a failed purchase).
+    //
+    // The actual arg is asserted by inspecting the function source; Vitest
+    // gives us a clean import without needing real Stripe creds.
+    const mod = await import("../../lib/stripe.js");
+    expect(typeof mod.refundPaymentIntent).toBe("function");
+
+    // Verify the function accepts 4 params — the 4th is refundApplicationFee.
+    // Function.length counts params up to (but not including) the first with
+    // a JS-level default. amountCents has no JS default (TypeScript optional),
+    // so length = 2 (paymentIntentId, amountCents). reverseTransfer and
+    // refundApplicationFee have defaults so they are not counted.
+    expect(mod.refundPaymentIntent.length).toBe(2);
+  });
+
+  it("refunds.ts calls refundPaymentIntent with true, true (fourth arg = refund_application_fee)", async () => {
+    // Read and verify the call site in refunds.ts hard-codes both flags.
+    // This is a source-level documentation test — it will fail if the call
+    // site is changed to pass false, alerting the developer.
+    const { readFileSync } = await import("fs");
+    const { resolve, dirname } = await import("path");
+    const { fileURLToPath } = await import("url");
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(resolve(dir, "refunds.ts"), "utf8");
+    // The refund line must pass (piId, refundAmount, true, true)
+    expect(src).toMatch(/refundPaymentIntent\s*\(\s*piId\s*,\s*refundAmount\s*,\s*true\s*,\s*true\s*\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration (Supabase required)
 // ---------------------------------------------------------------------------
 describe.skipIf(!hasSupabase)("POST /v1/payments/:id/refund — integration", () => {

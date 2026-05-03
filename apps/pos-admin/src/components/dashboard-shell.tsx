@@ -10,6 +10,7 @@ import {
   Users,
   Receipt,
   Settings,
+  MonitorSmartphone,
 } from "lucide-react";
 import { LocationSwitcher } from "@/components/location-switcher";
 import { listLocations } from "@/lib/api/orders";
@@ -22,6 +23,7 @@ const navItems = [
   { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/staff", label: "Staff", icon: Users },
   { href: "/receipts", label: "Receipts", icon: Receipt },
+  { href: "/devices", label: "Devices", icon: MonitorSmartphone },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

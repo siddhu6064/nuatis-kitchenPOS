@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { X, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
+import { X, ChevronDown, ChevronRight, AlertTriangle, RotateCcw } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Order } from "@nuatis/pos-shared";
 import {
   getOrder,
   getOrderAuditTrail,
   voidOrder,
+  refundPayment,
   type AuditEntry,
 } from "@/lib/api/orders";
 
@@ -58,6 +59,10 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
   const [voidDialogOpen, setVoidDialogOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
   const [voidError, setVoidError] = useState<string | null>(null);
+  const [refundDialogOpen, setRefundDialogOpen] = useState(false);
+  const [refundReason, setRefundReason] = useState("");
+  const [refundError, setRefundError] = useState<string | null>(null);
+  const [refundSuccess, setRefundSuccess] = useState<string | null>(null);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -89,8 +94,40 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
     },
   });
 
+  const cardPayment = order?.payments.find(
+    (p) => p.method === "card_stripe" && p.status === "succeeded"
+  );
   const canVoid =
     order?.status === "open" || order?.status === "fired";
+  const canRefund = order?.status === "paid" && !!cardPayment;
+
+  const refundMutation = useMutation({
+    mutationFn: ({ paymentId, reason }: { paymentId: string; reason: string }) =>
+      refundPayment(posJwt, paymentId, reason),
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+      void qc.invalidateQueries({ queryKey: ["order", orderId] });
+      setRefundDialogOpen(false);
+      setRefundReason("");
+      setRefundError(null);
+      const cents = (result.refund.amount_cents / 100).toFixed(2);
+      setRefundSuccess(`Refund of $${cents} processed successfully.`);
+      setTimeout(() => setRefundSuccess(null), 5000);
+    },
+    onError: (err: Error) => {
+      setRefundError(err.message);
+    },
+  });
+
+  function handleRefundSubmit() {
+    if (!refundReason.trim()) {
+      setRefundError("Reason is required");
+      return;
+    }
+    if (!cardPayment) return;
+    setRefundError(null);
+    refundMutation.mutate({ paymentId: cardPayment.id, reason: refundReason.trim() });
+  }
 
   function handleVoidSubmit() {
     if (!voidReason.trim()) {
@@ -329,23 +366,115 @@ export function OrderDrawer({ orderId, posJwt, onClose, onVoided }: Props) {
 
             {/* Actions footer */}
             {order && (
-              <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap gap-2">
-                {canVoid && (
-                  <button
-                    onClick={() => setVoidDialogOpen(true)}
-                    className="rounded-lg bg-red-50 border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-100 transition-colors"
-                  >
-                    Void order
-                  </button>
+              <div className="px-6 py-4 border-t border-slate-200 space-y-2">
+                {refundSuccess && (
+                  <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700 flex items-center gap-2">
+                    <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                    {refundSuccess}
+                  </div>
                 )}
-                <button
-                  onClick={() => void handleResendReceipt()}
-                  className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                >
-                  Resend email receipt
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  {canVoid && (
+                    <button
+                      onClick={() => setVoidDialogOpen(true)}
+                      className="rounded-lg bg-red-50 border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-100 transition-colors"
+                    >
+                      Void order
+                    </button>
+                  )}
+                  {canRefund && (
+                    <button
+                      onClick={() => { setRefundReason(""); setRefundError(null); setRefundDialogOpen(true); }}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition-colors"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Refund
+                    </button>
+                  )}
+                  <button
+                    onClick={() => void handleResendReceipt()}
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                  >
+                    Resend email receipt
+                  </button>
+                </div>
               </div>
             )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Refund confirmation dialog */}
+      <Dialog.Root
+        open={refundDialogOpen}
+        onOpenChange={(v) => {
+          if (!v) {
+            setRefundDialogOpen(false);
+            setRefundReason("");
+            setRefundError(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/40" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[70] w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl focus:outline-none">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-100">
+                <RotateCcw className="h-4 w-4 text-amber-600" />
+              </div>
+              <Dialog.Title className="font-serif text-lg font-semibold text-slate-900">
+                Refund this order?
+              </Dialog.Title>
+            </div>
+            <Dialog.Description className="text-sm text-slate-500 mb-4">
+              A full refund will be submitted to Stripe and the platform fee reversed. This cannot be undone.
+            </Dialog.Description>
+
+            {cardPayment && (
+              <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-700 mb-4">
+                <span className="font-medium">{fmt(cardPayment.amount_cents)}</span>
+                {" "}via {cardPayment.method.replace(/_/g, " ")}
+                {cardPayment.card_last4 && ` ·· ${cardPayment.card_last4}`}
+              </div>
+            )}
+
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Reason
+            </label>
+            <textarea
+              rows={3}
+              value={refundReason}
+              onChange={(e) => setRefundReason(e.target.value)}
+              placeholder="e.g. Customer request, duplicate charge"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 resize-none"
+              autoFocus
+            />
+
+            {refundError && (
+              <div className="mt-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-600">
+                {refundError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => {
+                  setRefundDialogOpen(false);
+                  setRefundReason("");
+                  setRefundError(null);
+                }}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRefundSubmit}
+                disabled={refundMutation.isPending}
+                className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-60 transition-colors"
+              >
+                {refundMutation.isPending ? "Processing…" : "Confirm refund"}
+              </button>
+            </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

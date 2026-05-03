@@ -46,7 +46,8 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Batch 17** added: `POST /v1/stripe/onboarding/start`, `GET /v1/stripe/onboarding/status`, `POST /v1/stripe/terminal/connection_token`, `GET /v1/stripe/terminal/readers`, `POST /v1/webhooks/stripe` (raw body, sig-verified), `POST /v1/payments/:id/refund` (manager-pin gate + idempotency), `POST /v1/orders/:id/payments` extended with card_stripe branch
 - Stripe webhook mounted BEFORE express.json() for raw body access; all Stripe vars optional → mock mode
 - All external services (Upstash Redis, Resend, Telnyx, Stripe) optional — graceful mock mode
-- **148 tests passing** (57 skip without Supabase, 1 todo) across 22 test files
+- **Batch 18** added: `GET /v1/terminals`, `POST /v1/terminals/register` (owner/manager only; real mode validates reader against Connect account; mock mode accepts blindly); webhook-dedup unit tests (2 new tests); refund contract tests (2 new tests)
+- **152 tests passing** (57 skip without Supabase, 1 todo) across 24 test files
 
 ### pos-shared (`packages/pos-shared`)
 - Composite TypeScript library — Zod schemas shared between pos-api and pos-admin
@@ -62,10 +63,12 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - Next.js 14 App Router, Auth.js v5, Tailwind v3, React Query v5, Radix UI
 - Stack: session JWT (`posJwt`, `role`) stored in Auth.js session; server components prefetch → client React Query re-hydrates
 - Session user has `role: "owner" | "manager"` and `posJwt: string`
-- **Pages**: dashboard, menu, orders, cash, reports, **staff** (Batch 16), **receipts** (Batch 16), **settings** (Batch 16)
-- **Staff page**: table with role/status badges, active toggle (with self-deactivate + last-owner guard), Invite/Edit dialog
+- **Pages**: dashboard, menu, orders, cash, reports, **staff** (B16), **receipts** (B16), **settings** (B16), **devices** (B18)
+- **Staff page**: table with role/status badges, active toggle (self-deactivate + last-owner guard), Invite/Edit dialog
 - **Receipts page**: paginated email+SMS history, channel/status filters, click-to-copy provider ID, resend button
-- **Settings page**: Stripe Connect section (owner-only Connect button, status badges), tenant section (owner edits, manager read-only), per-location section (both can edit), sales tax as % input
+- **Settings page**: Stripe Connect section (owner-only Connect button, status badges), tenant section, per-location section, sales tax input
+- **Devices page** (B18): table of registered Stripe Terminal readers from DB; "Register new reader" modal → `POST /api/v1/terminals/register`
+- **Orders drawer** (B18): Refund button visible on `status=paid` orders with a `card_stripe` payment; amber confirm dialog → `POST /api/v1/payments/:id/refund`; 5 s success banner on completion
 - **Batch 17** added: `startStripeOnboarding()`, `getStripeStatusServer()`, `listStripeReaders()` in `src/lib/api/stripe.ts`
 
 ## Database Migrations (Supabase)
@@ -85,7 +88,8 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 | `20260502170000_reports_daily.sql` | daily_sales_summaries, eod_rollups, `email_daily_report` + `daily_report_recipient_email` on tenants |
 | `20260502175000_reports_v2.sql` | Timezone-aware reporting helpers |
 | `20260502180000_staff_active.sql` | `active boolean NOT NULL DEFAULT true` on staff_members + index |
-| `20260502190000_stripe_connect.sql` | `stripe_account_id`, `stripe_charges_enabled`, `stripe_payouts_enabled`, `application_fee_bps` on tenants; `stripe_payment_intent_id`, `stripe_charge_id`, `application_fee_cents`, `card_brand`, `card_last4` on payments; `idempotency_keys` table; `stripe_terminal_readers` table |
+| `20260502190000_stripe_connect.sql` | `stripe_account_id`, `stripe_charges_enabled`, `stripe_payouts_enabled`, `application_fee_bps` on tenants; `stripe_charge_id`, `application_fee_refund_cents` on payments/refunds |
+| `20260503000000_terminal_readers.sql` | `stripe_terminal_readers` table (id, tenant_id, stripe_reader_id, label, location_id, last_seen_at) |
 
 ## Auth
 

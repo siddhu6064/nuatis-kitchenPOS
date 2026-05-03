@@ -103,3 +103,25 @@ export interface Location {
 export async function listLocations(posJwt: string): Promise<Location[]> {
   return apiFetch<Location[]>(`/locations`, posJwt);
 }
+
+export interface RefundResult {
+  payment: unknown;
+  refund: {
+    id: string;
+    amount_cents: number;
+    reason: string;
+    stripe_refund_id: string | null;
+    created_at: string;
+  };
+}
+
+export async function refundPayment(
+  posJwt: string,
+  paymentId: string,
+  reason: string
+): Promise<RefundResult> {
+  return apiFetch<RefundResult>(`/payments/${paymentId}/refund`, posJwt, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
