@@ -1,0 +1,94 @@
+▶ PROMPT [Phase 8 · Batch 19 · Replit Agent]
+
+CONTEXT
+- P5 (Stripe payments) closed in Batch 18 — 4 correctness audits passed, /devices live,
+  admin Refund button live, 152 tests pass.
+- All MVP product features are SHIPPED. Remaining gap to pilot is deployment readiness:
+  error monitoring, env hygiene, production logging, Vercel config.
+- Real account setup (hosted Supabase, Stripe verification, Resend, Telnyx, Upstash, Sentry)
+  is Sid's manual work. This batch makes the code ready so flipping env vars is the only
+  remaining step before deploy.
+- All external services follow mock-when-env-absent pattern. Sentry must too.
+
+GOAL
+Make the codebase deployment-ready — Sentry instrumented in both apps (mock when DSN unset),
+every env var documented, structured logging in production, Vercel config for admin.
+Demo: drop a real Sentry DSN into env, throw a test error, see it land in Sentry within 30s.
+
+SCOPE — BUILD THIS
+1. Install + wire @sentry/node in apps/pos-api — Sentry.init() reads SENTRY_DSN, no-op when
+   unset. Sentry.requestHandler() before routes, Sentry.errorHandler() before final error
+   middleware. CRITICAL: webhook /v1/webhooks/stripe must still receive raw body — verify
+   the existing express.raw mount ordering survives the Sentry middleware insertion.
+2. Install + wire @sentry/nextjs in apps/pos-admin — sentry.client.config.ts,
+   sentry.server.config.ts, sentry.edge.config.ts with the standard Next.js 14 pattern.
+   next.config.mjs wrapped with withSentryConfig. tunnelRoute can be left unset.
+3. Both apps tag Sentry events with tenant_id and user_id from req.auth / session when
+   available. Use Sentry.setUser({ id: tenantId }) + Sentry.setTag('user_id', userId).
+4. Comprehensive .env.example files in apps/pos-api and apps/pos-admin — every env var the
+   app reads, grouped by service (DB, Redis, Stripe, Resend, Telnyx, Sentry, Auth.js), with
+   comments noting which are optional (mock-mode) vs required-for-production.
+5. Structured JSON logging in pos-api when NODE_ENV=production — write a 30-line logger
+   module (no pino/winston dependency) that emits {ts, level, msg, ...ctx} JSON in prod and
+   pretty-printed lines in dev. Replace existing console.log calls in API entry points and
+   workers. Keep .info/.warn/.error signatures matching console.
+6. Health endpoint upgrade — GET /v1/health returns:
+     { ok: true,
+       version: <from package.json>,
+       timestamp: <iso>,
+       services: { db, redis, stripe, resend, telnyx, sentry } }
+   each service value is 'configured' (env present) or 'mock' (env absent). No outbound
+   calls — env-presence checks only.
+7. Vercel deployment config — apps/pos-admin/vercel.json declaring required env var names
+   (no values), build command, framework hint. Add a "Deployment" section to
+   apps/pos-admin/README.md with the Vercel setup steps Sid will follow.
+
+SCOPE — DO NOT BUILD
+- Actual Sentry account (Sid creates it)
+- Actual Vercel deployment (Sid runs `vercel --prod` when ready)
+- Source map upload to Sentry (deferred until first prod deploy when SENTRY_AUTH_TOKEN exists)
+- Sentry release tracking, Replay, performance monitoring (defer)
+- Heartbeat / online-status endpoint for readers (post-MVP, pos-terminal P9 owns this)
+- Dockerfile for pos-api (host decision pending: Replit Deployment vs Azure)
+- Dependency upgrades, refactors, or anything outside the 7 items above
+- pino, winston, or any logging dependency — write the 30-line logger from scratch
+- Anything new in artifacts/nuatis-pos (prototype is frozen)
+
+TECH CONSTRAINTS
+- @sentry/node version compatible with current Express + Node 20 (latest stable: 8.x)
+- @sentry/nextjs latest stable for Next 14 App Router
+- Sentry.init() must run BEFORE any other module that could throw at import time — typically
+  the first executable line in apps/pos-api/src/server.ts after the import block
+- Webhook raw-body must survive — confirm by running existing webhook tests after the
+  middleware insertion
+- All Sentry config gated on process.env.SENTRY_DSN — unset = no-op, no console noise
+- Logger module: TypeScript, zero deps, exported as { info, warn, error, debug }
+- Health endpoint env detection: check process.env.X presence with truthy guard, never
+  attempt actual connections
+- vercel.json declares env var NAMES; secrets stay in Vercel dashboard
+- ESM NodeNext, .js suffix on internal imports
+- Express router annotation pattern still applies for any new routers
+
+ACCEPTANCE
+- pnpm test passes (152+; expect ≤3 new tests for the logger + health endpoint shape)
+- pnpm typecheck clean in pos-api, pos-admin, pos-shared
+- `pnpm dev` with no SENTRY_DSN — apps boot cleanly, no Sentry init log lines
+- `pnpm dev` with SENTRY_DSN=https://example@example.ingest.sentry.io/1 — Sentry initializes
+  silently, app boots, no errors
+- GET /v1/health returns the new shape with all 6 service flags reflecting current env
+- Webhook signature verification still passes (run existing webhook tests)
+- grep for `process.env.` in apps/pos-api/src and apps/pos-admin/(app|lib) — every var has
+  a corresponding entry in the matching .env.example
+- NODE_ENV=production node smoke test of pos-api — log lines emit as JSON
+
+HARD STOP
+After scope is complete, STOP. Do not offer Dockerfiles, source map upload, Sentry Replay,
+performance monitoring, or new features. Report:
+- Summary of what shipped + which env vars are now documented
+- Sentry verification: clean boot with and without DSN
+- Sample /v1/health response
+- Test count delta
+- Errors or skipped items
+- Open questions (especially: did webhook tests pass after Sentry middleware insertion)
+
+Wait for next prompt.
