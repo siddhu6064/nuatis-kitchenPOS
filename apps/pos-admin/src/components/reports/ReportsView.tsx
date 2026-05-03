@@ -117,7 +117,7 @@ export function ReportsView({
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <MetricCard
           label="Gross Sales"
           valueCents={report.gross_sales_cents}
@@ -132,6 +132,10 @@ export function ReportsView({
           label="Tips"
           valueCents={report.tips_cents}
           subtext={report.voided_order_count > 0 ? `${report.voided_order_count} voided` : undefined}
+        />
+        <MetricCard
+          label="Discounts"
+          valueCents={report.discounts_cents}
         />
         <MetricCard
           label="Tax Collected"

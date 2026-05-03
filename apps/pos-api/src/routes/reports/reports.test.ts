@@ -128,6 +128,19 @@ describe("reportToCsv", () => {
     expect(csv).toContain("cash");
     expect(csv).toContain("card_present");
   });
+
+  it("includes Discounts row with zero value when no discounts", () => {
+    const csv = reportToCsv(fixture);
+    expect(csv).toContain("Discounts");
+    expect(csv).toContain("0.00");
+  });
+
+  it("renders correct non-zero discounts value", () => {
+    const withDiscounts: EndOfDayReport = { ...fixture, discounts_cents: 5000 };
+    const csv = reportToCsv(withDiscounts);
+    expect(csv).toContain("Discounts");
+    expect(csv).toContain("50.00");
+  });
 });
 
 // ---------------------------------------------------------------------------

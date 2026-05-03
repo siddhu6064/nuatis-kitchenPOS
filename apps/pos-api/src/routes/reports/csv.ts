@@ -4,7 +4,7 @@ import { stringify } from "csv-stringify/sync";
 import { requireAuth } from "../../middleware/auth.js";
 import { requireRole } from "../../middleware/role-guard.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
-import { aggregateEndOfDay, type PaymentRow } from "../../lib/reports.js";
+import { aggregateEndOfDay, type PaymentRow, type OrderDiscountRow } from "../../lib/reports.js";
 
 export const csvRouter: IRouter = Router();
 
@@ -192,19 +192,22 @@ csvRouter.get(
       let orderItems: unknown[] = [];
       let staffMembers: unknown[] = [];
       let menuItems: unknown[] = [];
+      let discounts: OrderDiscountRow[] = [];
       let refunds: Array<{ id: string; order_id: string; amount_cents: number; created_at: string }> = [];
 
       if (orderIds.length > 0) {
-        const [oi, pay, staff, menu] = await Promise.all([
+        const [oi, pay, staff, menu, disc] = await Promise.all([
           db.from("order_items").select("id, order_id, menu_item_id, name_snapshot, qty, price_cents, status").in("order_id", orderIds),
           db.from("payments").select("id, order_id, method, amount_cents, tip_cents, status, created_at").in("order_id", orderIds),
           db.from("staff_members").select("id, full_name").eq("tenant_id", tenantId),
           db.from("menu_items").select("id, taxable").eq("tenant_id", tenantId),
+          db.from("order_discounts").select("id, order_id, applied_amount_cents, voided_at").in("order_id", orderIds),
         ]);
         orderItems = oi.data ?? [];
         payments = pay.data ?? [];
         staffMembers = staff.data ?? [];
         menuItems = menu.data ?? [];
+        discounts = disc.data ?? [];
 
         const paymentIds = payments.map((p) => p.id);
         if (paymentIds.length > 0) {
@@ -226,6 +229,7 @@ csvRouter.get(
         cashEvents: [],
         staffMembers: staffMembers as Parameters<typeof aggregateEndOfDay>[0]["staffMembers"],
         menuItems: menuItems as Parameters<typeof aggregateEndOfDay>[0]["menuItems"],
+        discounts,
         salesTaxBps: 825,
       });
 

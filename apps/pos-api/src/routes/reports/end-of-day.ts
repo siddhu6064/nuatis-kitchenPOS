@@ -3,7 +3,7 @@ import { GetEndOfDayQuerySchema } from "@nuatis/pos-shared";
 import { requireAuth } from "../../middleware/auth.js";
 import { requireRole } from "../../middleware/role-guard.js";
 import { getSupabaseClient } from "../../lib/supabase.js";
-import { aggregateEndOfDay } from "../../lib/reports.js";
+import { aggregateEndOfDay, type OrderDiscountRow } from "../../lib/reports.js";
 import { logger } from "../../lib/logger.js";
 
 export const endOfDayRouter: IRouter = Router();
@@ -160,6 +160,7 @@ endOfDayRouter.get(
       { data: payments },
       { data: staffMembers },
       { data: menuItems },
+      { data: discountsRaw },
     ] = await Promise.all([
       db.from("order_items")
         .select("id, order_id, menu_item_id, name_snapshot, qty, price_cents, status")
@@ -173,6 +174,9 @@ endOfDayRouter.get(
       db.from("menu_items")
         .select("id, taxable")
         .eq("tenant_id", tenantId),
+      db.from("order_discounts")
+        .select("id, order_id, applied_amount_cents, voided_at")
+        .in("order_id", orderIds),
     ]);
 
     // Fetch refunds via payments → order_id
@@ -211,6 +215,7 @@ endOfDayRouter.get(
       cashEvents: [],
       staffMembers: staffMembers ?? [],
       menuItems: menuItems ?? [],
+      discounts: (discountsRaw ?? []) as OrderDiscountRow[],
       salesTaxBps: 825,
     });
 

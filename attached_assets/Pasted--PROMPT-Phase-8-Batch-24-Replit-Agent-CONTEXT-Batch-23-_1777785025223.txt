@@ -1,0 +1,80 @@
+▶ PROMPT [Phase 8 · Batch 24 · Replit Agent]
+
+CONTEXT
+- Batch 23 made payments.ts/reports/receipts discount-aware. The aggregation pipeline
+  (aggregateEndOfDay + reports_daily) now correctly computes and stores the discounts
+  total.
+- Three reporting SURFACES still don't display it: the admin /reports page (4 summary
+  cards + breakdown tables), the /v1/reports/end-of-day.csv export, and the daily EOD
+  summary email sent by the cron worker.
+- 210 tests pass.
+
+GOAL
+Discounts visible in every reporting surface an owner looks at. Demo: a pilot day with
+$50 in discounts → admin /reports shows the discount value, CSV download has a
+populated discounts column, the morning email contains a Discounts line in the
+summary table.
+
+SCOPE — BUILD THIS
+1. Admin /reports page (apps/pos-admin) — render the discounts value. Either add it as
+   a 5th summary card alongside the existing four (gross / tickets / tips / refunds —
+   confirm exact set in the page), or fold it into the existing card layout in a logical
+   position. aggregateEndOfDay already returns discounts_cents from B23; just surface it.
+
+2. /v1/reports/end-of-day.csv — verify whether discounts is already a column (it may be,
+   if the CSV is generated directly from the aggregation object). If not, add it. Column
+   order should match whatever the JSON aggregation returns.
+
+3. Daily EOD report email template (apps/pos-api/src/workers/end-of-day-rollup.ts or
+   wherever the email is composed) — add a "Discounts" line to the summary table.
+   Existing fields per B12: gross_sales, taxable, tax, tips, voids, refunds, net. Insert
+   Discounts between voids/refunds and net (the natural position; subtracts from gross
+   to net just like voids/refunds do).
+
+4. Tests — render verification:
+   - /reports page snapshot or DOM assertion with fixture data having discounts > 0 →
+     the discounts value is rendered
+   - CSV export response body for a fixture day with discounts → contains the discount
+     column header and the cell value
+   - EOD email template render (HTML + plain text) with discounts > 0 → output strings
+     contain "Discount" plus the amount
+
+SCOPE — DO NOT BUILD
+- Discounts breakdown tab (per type / per staff / per reason) — post-pilot
+- Discount filters on /reports — post-pilot
+- Discount sparkline on the 30-day chart — post-pilot
+- Receipt template customization (logo, footer) — post-pilot
+- Discount catalog — separate batch if pilot signal warrants
+- Item-level discounts, coupons, BOGO — post-MVP
+- Heartbeat, dashboard activity feed, anything outside scope
+- Anything new in artifacts/nuatis-pos (prototype frozen)
+
+TECH CONSTRAINTS
+- Read existing aggregation values; do NOT recompute discount math anywhere
+- All money in cents (int)
+- /reports page: server-component fetch shape unchanged; surface the existing field
+- CSV: use existing CSV generation pattern; add column to header + row in matching
+  position; verify Content-Type forward fix from B15 still works
+- Email template: HTML + plain text updated in lockstep (existing pattern)
+- ESM NodeNext .js imports
+- Supabase-gated tests use describe.skipIf
+
+ACCEPTANCE
+- pnpm test passes (210+; expect 3-5 new tests for the three surface verifications)
+- pnpm typecheck clean across pos-api, pos-admin, pos-shared
+- /reports page with fixture day having $50 discounts → discounts value rendered
+- /v1/reports/end-of-day.csv response contains discounts column header and the value
+- EOD email render (HTML + plain text) with discounts > 0 → output contains "Discount"
+  line + correct negative amount
+
+HARD STOP
+After scope is complete, STOP. Do not offer breakdown tabs, sparklines, catalog,
+custom filters, or new features. Report:
+- Summary of what shipped
+- Whether CSV already had the discounts column or had to add it (the existence test
+  is informative either way)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.

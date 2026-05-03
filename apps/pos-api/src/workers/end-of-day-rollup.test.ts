@@ -5,10 +5,79 @@
  * no Redis). DB-dependent tests are marked skipIf(noDb).
  */
 
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { env } from "../env.js";
+import { renderDailyReportHtml, renderDailyReportText } from "./end-of-day-rollup.js";
 
 const noDb = !env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY;
+
+// ---------------------------------------------------------------------------
+// Unit tests — renderDailyReportHtml / renderDailyReportText (no DB)
+// ---------------------------------------------------------------------------
+
+const RENDER_TENANT = { name: "Pilot Café" };
+const RENDER_BASE = {
+  tenant: RENDER_TENANT,
+  date: "2026-05-02",
+  grossSalesCents: 10000,
+  tipsCents: 500,
+  taxCents: 825,
+  discountsCents: 0,
+  netCents: 10500,
+  orderCount: 8,
+  paidOrderCount: 7,
+  byMethod: [],
+};
+
+describe("renderDailyReportHtml — discount row", () => {
+  it("omits Discounts row when discountsCents is 0", () => {
+    const html = renderDailyReportHtml({ ...RENDER_BASE, discountsCents: 0 });
+    expect(html).not.toContain("Discounts");
+  });
+
+  it("renders Discounts row with correct amount when discountsCents > 0", () => {
+    const html = renderDailyReportHtml({ ...RENDER_BASE, discountsCents: 5000 });
+    expect(html).toContain("Discounts");
+    expect(html).toContain("50.00");
+  });
+
+  it("positions Discounts row between Tax and Net", () => {
+    const html = renderDailyReportHtml({ ...RENDER_BASE, discountsCents: 200 });
+    const taxIdx = html.indexOf(">Tax<");
+    const discIdx = html.indexOf(">Discounts<");
+    const netIdx = html.indexOf(">Net<");
+    expect(taxIdx).toBeGreaterThan(-1);
+    expect(discIdx).toBeGreaterThan(taxIdx);
+    expect(netIdx).toBeGreaterThan(discIdx);
+  });
+});
+
+describe("renderDailyReportText — discount line", () => {
+  it("omits Discounts line when discountsCents is 0", () => {
+    const text = renderDailyReportText({
+      tenant: RENDER_TENANT,
+      date: "2026-05-02",
+      grossSalesCents: 10000,
+      discountsCents: 0,
+      netCents: 10000,
+      paidOrderCount: 7,
+    });
+    expect(text).not.toContain("Discounts");
+  });
+
+  it("includes Discounts line with correct amount when discountsCents > 0", () => {
+    const text = renderDailyReportText({
+      tenant: RENDER_TENANT,
+      date: "2026-05-02",
+      grossSalesCents: 10000,
+      discountsCents: 5000,
+      netCents: 5000,
+      paidOrderCount: 7,
+    });
+    expect(text).toContain("Discounts");
+    expect(text).toContain("50.00");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Unit tests — injectable emailFn; require Supabase for DB reads

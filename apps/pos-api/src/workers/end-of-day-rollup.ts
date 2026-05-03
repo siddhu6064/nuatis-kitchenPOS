@@ -59,18 +59,19 @@ function shiftDate(dateStr: string, hours: number): string {
 // Daily report email renderer
 // ---------------------------------------------------------------------------
 
-function renderDailyReportHtml(params: {
+export function renderDailyReportHtml(params: {
   tenant: { name: string };
   date: string;
   grossSalesCents: number;
   tipsCents: number;
   taxCents: number;
+  discountsCents: number;
   netCents: number;
   orderCount: number;
   paidOrderCount: number;
   byMethod: Array<{ method: PaymentRow["method"]; count: number; gross_cents: number }>;
 }): string {
-  const { tenant, date, grossSalesCents, tipsCents, taxCents, netCents, orderCount, paidOrderCount, byMethod } = params;
+  const { tenant, date, grossSalesCents, tipsCents, taxCents, discountsCents, netCents, orderCount, paidOrderCount, byMethod } = params;
 
   const methodRows = byMethod
     .map(
@@ -99,6 +100,7 @@ function renderDailyReportHtml(params: {
         <tr><td style="padding:5px 0;color:#6B7280;font-size:13px;">Gross Sales</td><td style="padding:5px 0;color:#111827;font-weight:600;text-align:right;">$${centsToStr(grossSalesCents)}</td></tr>
         <tr><td style="padding:5px 0;color:#6B7280;font-size:13px;">Tips</td><td style="padding:5px 0;color:#111827;text-align:right;">$${centsToStr(tipsCents)}</td></tr>
         <tr><td style="padding:5px 0;color:#6B7280;font-size:13px;">Tax</td><td style="padding:5px 0;color:#111827;text-align:right;">$${centsToStr(taxCents)}</td></tr>
+        ${discountsCents > 0 ? `<tr><td style="padding:5px 0;color:#6B7280;font-size:13px;">Discounts</td><td style="padding:5px 0;color:#111827;text-align:right;">−$${centsToStr(discountsCents)}</td></tr>` : ""}
         <tr><td style="padding:5px 0;color:#111827;font-weight:700;border-top:1px solid #e5e7eb;padding-top:8px;">Net</td><td style="padding:5px 0;color:#111827;font-weight:700;text-align:right;border-top:1px solid #e5e7eb;padding-top:8px;">$${centsToStr(netCents)}</td></tr>
       </tbody>
     </table>
@@ -125,18 +127,20 @@ function renderDailyReportHtml(params: {
 </body></html>`;
 }
 
-function renderDailyReportText(params: {
+export function renderDailyReportText(params: {
   tenant: { name: string };
   date: string;
   grossSalesCents: number;
+  discountsCents: number;
   netCents: number;
   paidOrderCount: number;
 }): string {
-  const { tenant, date, grossSalesCents, netCents, paidOrderCount } = params;
+  const { tenant, date, grossSalesCents, discountsCents, netCents, paidOrderCount } = params;
   return [
     `Daily Summary — ${tenant.name} — ${date}`,
     "",
     `Gross Sales: $${centsToStr(grossSalesCents)}`,
+    ...(discountsCents > 0 ? [`Discounts:   -$${centsToStr(discountsCents)}`] : []),
     `Net:         $${centsToStr(netCents)}`,
     `Paid Orders: ${paidOrderCount}`,
     "",
@@ -387,6 +391,7 @@ export async function processRollup(
     grossSalesCents: agg.gross_sales_cents,
     tipsCents: agg.tips_cents,
     taxCents: agg.tax_cents,
+    discountsCents: agg.discounts_cents,
     netCents: agg.net_cents,
     orderCount: agg.order_count,
     paidOrderCount: agg.paid_order_count,
@@ -396,6 +401,7 @@ export async function processRollup(
     tenant: tenant as { name: string },
     date,
     grossSalesCents: agg.gross_sales_cents,
+    discountsCents: agg.discounts_cents,
     netCents: agg.net_cents,
     paidOrderCount: agg.paid_order_count,
   });
