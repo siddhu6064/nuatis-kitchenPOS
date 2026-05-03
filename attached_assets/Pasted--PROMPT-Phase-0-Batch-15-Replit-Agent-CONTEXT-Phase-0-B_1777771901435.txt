@@ -1,0 +1,168 @@
+▶ PROMPT [Phase 0 · Batch 15 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-14 complete. Admin app has working sign-up, dashboard, menu, orders, cash. Three placeholders remain: /reports, /staff, /receipts, /settings. This batch wires up /reports against the existing /v1/reports/* API (Batch 12). Includes a one-line proxy fix to forward upstream Content-Type for the CSV download endpoint. NO staff/receipts/settings (later batches).
+
+GOAL
+Working /reports admin screen: owner picks a date, sees gross/net/tax/tips summary cards, a 30-day sparkline of daily net revenue, by-method/by-item/by-staff breakdown tables, and a "Download CSV" button that triggers a real file download.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — Proxy Content-Type fix
+═══════════════════════════════════════
+
+1. apps/pos-admin/src/app/api/v1/[...path]/route.ts:
+   - CURRENT: hardcodes "Content-Type": "application/json" on response
+   - NEW: forward all upstream headers via headers: Object.fromEntries(upstream.headers.entries())
+   - EXCEPT: strip "transfer-encoding" header (Next.js handles chunking; conflict otherwise)
+   - EXCEPT: strip "content-encoding" if upstream returned a gzipped body that Next.js will re-encode (defensive)
+   - Test by hitting /api/v1/reports/end-of-day.csv?date=2026-05-01 — should return text/csv with attachment Content-Disposition
+
+═══════════════════════════════════════
+SECTION 2 — pos-admin reports page
+═══════════════════════════════════════
+
+2. apps/pos-admin/src/app/reports/page.tsx — replace placeholder; server component:
+   - Read `?date=YYYY-MM-DD` from search params; default to today
+   - Read selected location_id from session/cookie (use existing pattern from /orders, /cash)
+   - Parallel-fetch: /v1/reports/end-of-day?date={date} + /v1/reports/daily-history?limit=30
+   - Renders client component <ReportsView report={report} history={history} initialDate={date} />
+
+3. apps/pos-admin/src/components/reports/ReportsView.tsx (client):
+   - Header bar: "Reports" title (Lora) + date picker + "Download CSV" button (right-aligned)
+   - Date picker: <input type="date" /> styled with Tailwind; max attribute set to today's date (server-side prevents future dates anyway, but UX cue helps)
+     * On change: navigate to /reports?date={new} via router.push (re-fetches via server component)
+   - "Download CSV" button:
+     * Opens a hidden <a href="/api/v1/reports/end-of-day.csv?date={date}" download={`report-${date}.csv`}> programmatically
+     * No fancy AJAX — just trigger a browser download via the proxy
+   - Snapshot/live indicator: if report.is_snapshot=true, show small badge "Final · snapshotted at {snapshot_at}"; else show "Live data"
+   - Below header: 4 summary cards (grid 4-col responsive)
+     * Gross Sales, Net, Tips, Tax — each with $X.XX in Lora 36px tabular-nums + small subtext "{order_count} orders" / "{paid_order_count} paid"
+   - Below cards: 30-day sparkline (full-width)
+   - Below sparkline: 3 breakdown tables side-by-side (responsive — stack on mobile)
+     * "By Payment Method" — table: method | count | gross
+     * "Top Items" — table: name | qty sold | gross | %
+     * "By Staff" — table: name | tickets | gross | tips
+
+4. apps/pos-admin/src/components/reports/Sparkline.tsx (client):
+   - Recharts AreaChart with one series: net_cents over date
+   - X-axis: dates (formatted MM/DD), Y-axis: hidden, tooltip on hover shows full date + dollars
+   - Brand-blue stroke (#0047FF), 8% opacity fill
+   - Empty state: "No data yet — sparkline appears after first day of sales"
+   - Height: 120px, width: 100%
+   - On click of a data point: navigate to /reports?date={clicked_date}
+   - Use Recharts' ResponsiveContainer for width
+
+5. apps/pos-admin/src/components/reports/MetricCard.tsx (reusable):
+   - Props: label, valueCents, subtext (optional)
+   - Renders: small label (JetBrains Mono uppercase 10px ink-4) + value Lora 36px tabular-nums + optional subtext (Inter 12px ink-3)
+   - Money formatted via Intl.NumberFormat USD
+
+6. apps/pos-admin/src/components/reports/BreakdownTable.tsx (reusable):
+   - Props: title, columns: { key, label, format }, rows
+   - Renders semantic table with Tailwind classes; first column left-aligned, money columns right-aligned tabular-nums
+   - Empty state: "No data" centered with ink-4 color
+   - Used 3x with different shapes
+
+7. Add api-client wrappers in apps/pos-admin/src/lib/api/reports.ts:
+   - getEndOfDay(date, location_id?) → calls /v1/reports/end-of-day
+   - getDailyHistory(limit, location_id?) → calls /v1/reports/daily-history
+   - (CSV download bypasses api-client — direct browser navigation)
+
+═══════════════════════════════════════
+SECTION 3 — Recharts dep + tooling
+═══════════════════════════════════════
+
+8. Add to apps/pos-admin dependencies:
+   - recharts@^2.15
+
+9. apps/pos-admin/src/lib/format.ts — small utility module:
+   - formatMoney(cents): "$X.XX"
+   - formatDate(iso): "May 2"
+   - formatPct(num): "12.5%"
+   - All used by Reports components and Sparkline tooltip
+
+═══════════════════════════════════════
+SECTION 4 — Smoke test (manual)
+═══════════════════════════════════════
+
+10. Manual verification (document in batch report):
+    - Sign in as owner at /sign-in (no Supabase = sign-in will fail at API; document this and continue with typecheck-only verification)
+    - Navigate to /reports
+    - Date picker present, defaults to today
+    - Pick yesterday → URL updates to /reports?date={yesterday}, page reflects new date
+    - 4 cards render with $0.00 each (no data without Supabase)
+    - Sparkline renders empty state
+    - Click "Download CSV" → triggers download (or 401's gracefully if no session)
+    - Document any 500 errors and what caused them
+
+═══════════════════════════════════════
+SECTION 5 — Tests
+═══════════════════════════════════════
+
+11. NO new pos-api tests this batch (no API changes; reports endpoints already tested in Batch 12).
+
+12. Optional: snapshot test for Sparkline with fixture data (skip if React Testing Library not in deps yet — don't add testing infra mid-batch).
+
+═══════════════════════════════════════
+SECTION 6 — Documentation + commit
+═══════════════════════════════════════
+
+13. Update apps/pos-admin/README.md routes overview:
+    - /reports (date-aware end-of-day report + 30-day sparkline + CSV download)
+    - Note proxy header fix in changelog/notes section
+
+14. From root: pnpm install (recharts), pnpm -F @nuatis/pos-admin typecheck, pnpm -F @nuatis/pos-api typecheck + test, pnpm -F @nuatis/pos-shared build.
+
+15. Commit + push:
+    - git add .
+    - git commit -m "feat(admin): reports screen with sparkline + CSV download + proxy header fix"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add custom date range pickers (single date only this batch)
+- Do NOT add export to PDF or Excel — CSV only
+- Do NOT add weekly/monthly rollup pages — daily only
+- Do NOT add chart libraries beyond Recharts
+- Do NOT add Y-axis labels/grid lines on the sparkline (clean minimalist)
+- Do NOT add comparison views (today vs yesterday, this week vs last)
+- Do NOT add real-time live updates (it's a daily report, not live)
+- Do NOT modify reports endpoints in pos-api
+- Do NOT add /staff, /receipts, /settings (Batch 16-17)
+- Do NOT touch artifacts/, supabase/, prototype, migrations
+- Do NOT add tests for React components (UI manually verified for now)
+
+TECH CONSTRAINTS
+- Recharts ResponsiveContainer + AreaChart pattern
+- All money displays use formatMoney(cents) from src/lib/format.ts
+- Date picker uses native <input type="date"> with max=today
+- CSV download via direct browser navigation, NOT fetch + blob (simpler + standard)
+- Proxy header forward via Object.fromEntries — strip transfer-encoding only
+- Server-side render the report data, client renders interactive elements
+- All client components use React Query for any future client-side refetches (currently server fetches)
+- Workspace deps via 'workspace:*'
+
+ACCEPTANCE
+1. /reports page renders without errors
+2. Date picker present, defaults to today, max=today
+3. Changing date navigates correctly with URL state
+4. 4 summary cards render (with $0.00 if no data, real numbers if data exists)
+5. Sparkline renders or shows empty state
+6. 3 breakdown tables render (or empty state)
+7. "Download CSV" button triggers a browser download (verify Content-Type forwarded correctly)
+8. Snapshot/live indicator displays correctly based on is_snapshot field
+9. pnpm -F @nuatis/pos-admin typecheck → 0 errors
+10. pnpm -F @nuatis/pos-api typecheck + test → preserve baseline
+11. git status clean post-commit
+12. git log --oneline -1 matches commit message
+
+HARD STOP
+Stop after scope. Report:
+- Files created (counts)
+- TS workarounds (especially Recharts + Next.js 14 server/client component boundary, ResponsiveContainer width=0 issue)
+- Confirm proxy fix works for both JSON and CSV endpoints (one example each)
+- Confirm migrations 0001-0013 untouched, prototype untouched, supabase/ untouched, pos-api unchanged except no changes
+- Open questions for Batch 16 (staff management screen — list staff, invite new staff, role changes, deactivate; receipts history page — list email_messages + sms_messages with provider IDs and status; tenant settings — name, vertical, timezone, sales_tax_bps, email_daily_report toggle, daily_report_recipient_email)
+
+Wait for next prompt.

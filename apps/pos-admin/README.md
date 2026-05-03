@@ -23,7 +23,7 @@ Visit http://localhost:3001
 | `/menu` | Live | Full menu CRUD (categories, items, modifier groups) |
 | `/orders` | Live | Active/Today/History tabs, drill-down drawer, void flow |
 | `/cash` | Live | Current shift view, manual events (pay in/out/no sale), close shift |
-| `/reports` | Placeholder | Coming in Batch 15 |
+| `/reports` | Live | Date-aware end-of-day report · 30-day sparkline · CSV download |
 | `/staff` | Placeholder | Coming in Batch 16 |
 | `/receipts` | Placeholder | Coming in Batch 16 |
 | `/settings` | Placeholder | Coming soon |

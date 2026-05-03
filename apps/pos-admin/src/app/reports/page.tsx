@@ -1,38 +1,55 @@
+import { auth } from "@/auth";
 import { DashboardShell } from "@/components/dashboard-shell";
-import { BarChart3 } from "lucide-react";
+import { ReportsView } from "@/components/reports/ReportsView";
+import {
+  getEndOfDay,
+  getDailyHistory,
+  emptyReport,
+  type EndOfDayReport,
+  type DailyHistoryEntry,
+} from "@/lib/api/reports";
+import { listLocations } from "@/lib/api/orders";
 
-export default function ReportsPage() {
-  return (
-    <DashboardShell>
-      <div className="max-w-5xl mx-auto">
-        <h1 className="font-serif text-3xl font-bold text-slate-900 mb-2">Reports</h1>
-        <ComingSoon
-          icon={<BarChart3 className="h-12 w-12 text-slate-300" />}
-          title="Reports coming soon"
-          description="This screen will show end-of-day reports, sales summaries, payment breakdowns, and CSV exports."
-        />
-      </div>
-    </DashboardShell>
-  );
+interface ReportsPageProps {
+  searchParams: { date?: string };
 }
 
-function ComingSoon({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
+function todayIso(): string {
+  return new Intl.DateTimeFormat("en-CA").format(new Date());
+}
+
+export default async function ReportsPage({ searchParams }: ReportsPageProps) {
+  const session = await auth();
+  const posJwt = session?.user?.posJwt ?? "";
+  const today = todayIso();
+  const date = searchParams.date ?? today;
+
+  let report: EndOfDayReport = emptyReport(date);
+  let history: DailyHistoryEntry[] = [];
+
+  try {
+    const locations = await listLocations(posJwt);
+    const locationId = locations[0]?.id;
+
+    const [reportResult, historyResult] = await Promise.all([
+      getEndOfDay(posJwt, date, locationId),
+      getDailyHistory(posJwt, 30, locationId),
+    ]);
+
+    if (reportResult) report = reportResult;
+    history = historyResult;
+  } catch {
+    // No Supabase in dev — render with empty/zero data
+  }
+
   return (
-    <div className="mt-12 flex flex-col items-center justify-center text-center gap-4 py-16 rounded-2xl border-2 border-dashed border-slate-200">
-      {icon}
-      <h2 className="font-serif text-xl font-semibold text-slate-700">{title}</h2>
-      <p className="max-w-sm text-sm text-slate-400 leading-relaxed">{description}</p>
-      <span className="mt-2 inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-medium text-amber-700">
-        Coming in Batch 14
-      </span>
-    </div>
+    <DashboardShell>
+      <ReportsView
+        report={report}
+        history={history}
+        initialDate={date}
+        today={today}
+      />
+    </DashboardShell>
   );
 }
