@@ -1,0 +1,133 @@
+▶ PROMPT [Phase 8 · Batch 22 · Replit Agent]
+
+CONTEXT
+- Batch 21 closed pino redaction and shipped owner-facing audit log viewer. 185 tests pass.
+- Most pilot-relevant feature gap remaining: discounts / comps. Cafe owners will want to
+  comp items for staff or apply ad-hoc senior/employee discounts within their first week.
+- For MVP: per-order ad-hoc discount (pct or fixed amount, no saved catalog yet). Catalog
+  comes in a later batch if pilot signal confirms the need.
+- Cashier-side discount application belongs in apps/pos-terminal P9; for now manager
+  applies via admin Orders drawer.
+
+GOAL
+Per-order ad-hoc discount engine with correct tax-after-discount math. Demo: order with
+$20 subtotal ($15 taxable, $5 non-taxable, 8.25% tax), apply 10% discount with reason
+"employee comp", total drops from $21.24 to $19.11. Owner can void the discount and
+totals revert.
+
+SCOPE — BUILD THIS
+1. Migration 0017 — order_discounts table:
+   - id (uuid pk), tenant_id (uuid, FK tenants, RLS), order_id (uuid, FK orders)
+   - type ('pct' | 'amt') as text with check constraint
+   - value_bps int null (used when type='pct'; bps so 1000 = 10%)
+   - value_cents int null (used when type='amt')
+   - applied_amount_cents int not null (the realized cents subtracted at apply time)
+   - applied_by_staff_id (uuid, FK staff_members)
+   - reason text not null (required at endpoint level too)
+   - applied_at timestamptz default now()
+   - voided_at timestamptz nullable
+   - voided_by_staff_id uuid nullable
+   - RLS: tenant_id matches + service_role bypass (existing pattern)
+   - Index on (order_id, voided_at) — partial where voided_at is null is fine
+
+2. Endpoint POST /v1/orders/:id/discount — manager PIN gated. Body: { type, value, reason }.
+   - Validates: value > 0; pct value_bps ≤ 5000 (50% cap); amt value_cents ≤ current
+     subtotal_cents; reason 1-200 chars
+   - Inserts order_discounts row
+   - Calls recalcOrderTotals() — now factors in non-voided discounts
+   - Returns updated order with discount line in response
+   - tenant_id from req.auth, never body
+   - 400 on validation failure; 409 if order is paid/voided
+
+3. Endpoint POST /v1/orders/:id/discount/:application_id/void — manager PIN gated.
+   Sets voided_at + voided_by_staff_id, recomputes totals. POST not DELETE so it shows
+   up in audit trail as an action.
+
+4. Recompute logic in lib/db.ts (extend existing recalcOrderTotals):
+   - subtotal_cents = sum of order_items lines — UNCHANGED
+   - Apply non-voided discounts in applied_at order:
+     - if pct: this_discount = floor(subtotal_cents * value_bps / 10000)
+     - if amt: this_discount = min(value_cents, max(0, subtotal_cents - sum_of_prior_applied))
+     - persist applied_amount_cents on the row
+   - discount_total_cents = sum of applied_amount_cents (non-voided)
+   - taxable_subtotal_cents = sum of items where taxable=true (UNCHANGED)
+   - non_taxable_subtotal_cents = subtotal_cents - taxable_subtotal_cents
+   - Proportional tax reduction:
+     taxable_after_discount = floor(
+       taxable_subtotal_cents * (subtotal_cents - discount_total_cents) / max(subtotal_cents, 1)
+     )
+   - tax_cents = floor(taxable_after_discount * sales_tax_bps / 10000)
+   - total_cents = subtotal_cents - discount_total_cents + tax_cents + tip_cents
+   - Persist discount_total_cents on orders row (denormalized for read speed)
+   - All math in cents int; use Math.floor() consistently; never round
+
+5. Admin Orders drawer — "Apply Discount" button visible only on orders with status ∈
+   {open, fired}. Click → reuse existing manager PIN modal → discount form modal: radio
+   (Percentage | Fixed amount), value input (with %/$ adornment by type), reason textarea
+   (required, 1-200). Submit → POST → drawer refreshes via router.refresh() to show:
+   - "Discount" line below Subtotal showing -$X.XX with reason in muted text
+   - Each applied discount line has a small "void" affordance (also PIN-gated)
+   - Tax line reflects post-discount value
+
+6. Audit log entries — fire-and-forget:
+   - On apply: action 'discount_applied', payload { order_id, type, value, applied_amount_cents, reason }
+   - On void: action 'discount_voided', payload { order_id, application_id, reason }
+
+7. Tests — pure recompute math (no DB needed):
+   - $20 subtotal ($15 taxable, $5 non-taxable), 10% pct, 825 bps tax →
+     discount=$2.00, taxable_after=$13.50 (floor(1500*1800/2000)=1350), tax=$1.11
+     (floor(1350*825/10000)=111), total=$19.11
+   - $20 subtotal ($15 taxable, $5 non-taxable), $5 amt, 825 bps tax →
+     discount=$5.00, taxable_after=$11.25 (floor(1500*1500/2000)=1125), tax=$0.92
+     (floor(1125*825/10000)=92), total=$15.92
+   - Stacked: $10 fully-taxable subtotal, 10% then $1 amt → first=$1, second=$1
+     (min($1, $9 remaining)), total_discount=$2, taxable_after=$8, tax=$0.66, total=$8.66
+   - Validation: 5001 bps → 400; $25 amt on $20 order → 400; reason empty → 400
+
+SCOPE — DO NOT BUILD
+- Discount catalog (saved discounts owners reuse) — separate batch if pilot signal warrants
+- Item-level discounts (order-level only for MVP)
+- Reports rollup integration — populate the existing reports_daily.discounts placeholder
+  in a follow-up batch (touches the cron worker)
+- Receipt template discount line — follow-up batch (email + SMS templates)
+- Cashier-side application in artifacts/nuatis-pos (prototype frozen)
+- Coupon codes / promo codes / BOGO (post-MVP)
+- Discount on already-paid orders (refunds cover this currently)
+- Heartbeat / dashboard activity feed / anything outside scope
+
+TECH CONSTRAINTS
+- All money in cents (int)
+- tenant_id from req.auth, never body
+- Manager PIN gate via existing requireManagerPin() middleware
+- Express router: const orderDiscountsRouter: IRouter = Router() — TS2742 composite rule
+- Recompute math: Math.floor() consistently; never Math.round() (predictability for tests)
+- Tax-after-discount: proportional reduction of taxable subtotal (this is what most state
+  laws actually require — discount applied before tax)
+- Soft delete (voided_at), never hard delete — preserves audit trail
+- discount_total_cents stored on orders row, recomputed by recalcOrderTotals
+- ESM NodeNext .js imports
+- Supabase-gated tests use describe.skipIf
+
+ACCEPTANCE
+- pnpm test passes (185+; expect 6-10 new tests covering recompute math + validation)
+- pnpm typecheck clean across pos-api, pos-admin, pos-shared
+- Migration 0017 applies cleanly
+- POST without PIN → 403 manager_pin_required
+- POST with PIN → 200 with updated totals matching the math tests
+- Void endpoint reverses totals correctly
+- All four math test cases above pass exactly to the cent
+- Validation errors (cap, oversize, missing reason) → 400 with structured error body
+- Admin drawer shows Apply Discount button on open/fired only; hidden on paid/voided
+- After apply, drawer shows discount line + void affordance + corrected tax + total
+- Audit log writes for both apply and void
+
+HARD STOP
+After scope is complete, STOP. Do not offer catalog, item-level, coupon codes, BOGO, or
+new features. Report:
+- Summary of what shipped
+- Migration 0017 column shape (single value col w/ semantics by type, or two cols — your call)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.
