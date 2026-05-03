@@ -7,7 +7,11 @@
  *
  * Matches the { info, warn, error, debug } surface of the pino logger so
  * callers can swap without changes.
+ *
+ * ctx objects are scrubbed through redactSensitive before serialization so
+ * sensitive fields (pin, password, api_key, …) never appear in logs.
  */
+import { redactSensitive } from "./redact.js";
 
 const IS_PROD = process.env["NODE_ENV"] === "production";
 
@@ -16,17 +20,19 @@ function write(
   msg: string,
   ctx?: Record<string, unknown>
 ): void {
+  const safeCtx = ctx ? (redactSensitive(ctx) as Record<string, unknown>) : undefined;
+
   if (IS_PROD) {
     const line: Record<string, unknown> = {
       ts: new Date().toISOString(),
       level,
       msg,
-      ...ctx,
+      ...safeCtx,
     };
     process.stderr.write(JSON.stringify(line) + "\n");
   } else {
     const prefix = `[${level.toUpperCase().padEnd(5)}]`;
-    const extra = ctx ? " " + JSON.stringify(ctx) : "";
+    const extra = safeCtx ? " " + JSON.stringify(safeCtx) : "";
     // eslint-disable-next-line no-console
     (level === "error" ? console.error : console.warn)(`${prefix} ${msg}${extra}`);
   }

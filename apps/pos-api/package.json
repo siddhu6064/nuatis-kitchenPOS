@@ -21,6 +21,7 @@
     "csv-stringify": "^6.7.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.4.1",
     "ioredis": "^5.10.1",
     "jose": "^5.9.6",
     "pino": "^9.5.0",

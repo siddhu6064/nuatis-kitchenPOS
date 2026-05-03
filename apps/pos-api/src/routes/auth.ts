@@ -8,6 +8,7 @@ import { getSupabaseClient } from "../lib/supabase.js";
 import { signSessionJwt, signTerminalJwt } from "../lib/jwt.js";
 import { verifyPassword, verifyPin } from "../lib/passwords.js";
 import { logger } from "../lib/logger.js";
+import { authSignInLimiter, authPinLimiter } from "../middleware/rate-limit.js";
 
 export const authRouter: IRouter = Router();
 
@@ -39,6 +40,7 @@ async function writeAuditLog(params: {
 // ---------------------------------------------------------------------------
 authRouter.post(
   "/sign-in",
+  authSignInLimiter,
   async (req: Request, res: Response): Promise<void> => {
     const parsed = SignInRequestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -122,6 +124,7 @@ authRouter.post(
 // ---------------------------------------------------------------------------
 authRouter.post(
   "/pin",
+  authPinLimiter,
   async (req: Request, res: Response): Promise<void> => {
     const parsed = PinRequestSchema.safeParse(req.body);
     if (!parsed.success) {

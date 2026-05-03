@@ -31,6 +31,12 @@ import { closeQueues, scheduleEodCron } from "./lib/queue.js";
 
 const app = express();
 
+// Trust the first proxy hop so req.ip reflects the real client IP (from
+// X-Forwarded-For) rather than the proxy's address. Required for per-IP
+// rate limiting to work correctly behind Replit's shared proxy / Vercel / etc.
+// Set to the number of trusted proxy hops in your infrastructure.
+app.set("trust proxy", 1);
+
 // CORS — only applied when CORS_ALLOWED_ORIGINS is configured (needed for
 // local dev where the Vite dev server runs on a different port from the API).
 if (env.CORS_ALLOWED_ORIGINS) {
@@ -68,7 +74,10 @@ app.use(
 // ---------------------------------------------------------------------------
 app.use("/v1/webhooks/stripe", webhookRouter);
 
-app.use(express.json({ limit: "1mb" }));
+// 100 kb cap — reject oversized payloads before route handlers run.
+// Individual routes that legitimately need larger bodies (e.g. file upload)
+// should mount their own express.raw() / multer BEFORE this global limit.
+app.use(express.json({ limit: "100kb" }));
 
 // Routes
 app.use("/v1", healthRouter);

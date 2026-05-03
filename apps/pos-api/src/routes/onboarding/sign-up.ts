@@ -3,6 +3,7 @@ import { SignUpRequestSchema } from "@nuatis/pos-shared";
 import { getSupabaseClient } from "../../lib/supabase.js";
 import { hashPassword } from "../../lib/passwords.js";
 import { logger } from "../../lib/logger.js";
+import { signUpLimiter } from "../../middleware/rate-limit.js";
 
 export const onboardingRouter: IRouter = Router();
 
@@ -12,6 +13,7 @@ export const onboardingRouter: IRouter = Router();
 // ---------------------------------------------------------------------------
 onboardingRouter.post(
   "/sign-up",
+  signUpLimiter,
   async (req: Request, res: Response): Promise<void> => {
     const parsed = SignUpRequestSchema.safeParse(req.body);
     if (!parsed.success) {

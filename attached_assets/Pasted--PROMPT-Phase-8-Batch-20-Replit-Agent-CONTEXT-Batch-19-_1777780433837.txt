@@ -1,0 +1,102 @@
+▶ PROMPT [Phase 8 · Batch 20 · Replit Agent]
+
+CONTEXT
+- Batch 19 wired Sentry (mock-mode safe), boot-logger, structured health endpoint, .env.example
+  files, Vercel config. 158 tests pass.
+- Code is deployment-ready in principle, but production-hardening gaps remain: workers and most
+  route modules still use raw console.*, no rate limiting on auth endpoints, no body size limits,
+  no secrets redaction in logs / Sentry payloads.
+- All four items below are pure hardening — no new features, no schema changes, no UI changes.
+
+GOAL
+Close the four production-hardening gaps so the code is deploy-day-safe — structured logs
+across all worker + route entry points, brute-force-resistant auth endpoints, bounded request
+sizes, no sensitive fields leaking into logs or Sentry. Demo: tail prod logs as NDJSON, send
+6 sign-in attempts in a row from one IP and watch #6 get rate-limited, send a 5MB body and
+watch it get rejected, throw an error containing a PIN and verify the captured payload has
+the PIN redacted.
+
+SCOPE — BUILD THIS
+1. Boot-logger sweep — replace ALL remaining console.log / console.warn / console.error /
+   console.info calls in apps/pos-api/src with the boot-logger from B19. Targets at minimum:
+   - apps/pos-api/src/workers/* (receipt-email, receipt-sms, end-of-day-rollup, queue init)
+   - apps/pos-api/src/routes/* (any handler-level logs)
+   - apps/pos-api/src/lib/* (db, stripe, idempotency, etc.)
+   Test files (*.test.ts) and the boot-logger module itself are excluded. Verify with grep
+   after the sweep.
+
+2. Rate limiting on auth endpoints — add express-rate-limit middleware to:
+   - POST /v1/auth/sign-in — 5 attempts per 15 minutes per IP
+   - POST /v1/auth/pin       — 5 attempts per 15 minutes per IP
+   - POST /v1/onboarding/sign-up — 3 per hour per IP
+   In-memory store (acceptable for one-instance pilot; note this limitation in a code comment
+   that mentions Upstash-Redis-backed store as the multi-instance upgrade path). Returns 429
+   with { error: 'rate_limited', retry_after_seconds: <n> } body.
+
+3. Request body size limits — apply express.json({ limit: '100kb' }) globally in
+   apps/pos-api/src/index.ts. The webhook route MUST be unaffected — verify express.raw on
+   /v1/webhooks/stripe still mounted before the global json middleware (it already is from
+   B17 — just confirm the limit setting doesn't disturb it). Any route that legitimately
+   needs a larger body should override per-route (none currently does).
+
+4. Sensitive-field redaction in logs + Sentry —
+   - Add a redactSensitive(obj) helper in apps/pos-api/src/lib/redact.ts that recursively
+     replaces values for keys matching: pin, password, password_hash, pin_hash, stripe_secret,
+     api_key, authorization, cookie. Replace with the string '[REDACTED]'.
+   - Wire it into the boot-logger so any ctx object passed to logger.error/warn/info gets
+     redacted before serialization.
+   - Wire it into Sentry via Sentry.init({ beforeSend: (event) => redactEvent(event) })
+     where redactEvent walks event.extra, event.contexts, event.request.data and applies the
+     same redaction. event.request.headers is also redacted.
+   - Add unit tests covering: nested object redaction, array of objects, non-object values
+     pass through, the wired-up boot-logger redacts on call.
+
+SCOPE — DO NOT BUILD
+- Source map upload to Sentry (deployment-day, when SENTRY_AUTH_TOKEN exists)
+- Audit log admin viewer / audit log API endpoint (post-pilot if pilot proves it's needed)
+- Discount engine, tip pool, gift cards, loyalty (post-MVP)
+- Heartbeat / online-status for terminal readers (P9 pos-terminal)
+- New features in artifacts/nuatis-pos (prototype frozen)
+- Replacing express-rate-limit with a custom solution
+- CORS changes, CSP headers, or any other middleware not listed
+- Dockerfile, K8s manifests, IaC
+- Dependency upgrades unless required to install express-rate-limit
+
+TECH CONSTRAINTS
+- express-rate-limit version compatible with current Express + Node 20 (latest stable: 7.x)
+- The rate-limit middleware mounts BEFORE the route handler, AFTER the global json middleware
+- Webhook route mounts BEFORE both — do not change ordering
+- 429 response shape must match existing error response convention (whatever pos-api already
+  uses for 4xx — don't introduce a new shape)
+- Redaction is case-insensitive on keys; preserves object shape (don't drop keys, just replace
+  values)
+- boot-logger imports redactSensitive — keep the dependency direction (redact has no deps;
+  logger imports it)
+- Sentry beforeSend returns the event (or null to drop) — never throws; catch + return event
+  on any redaction error so we don't lose error reports to a redaction bug
+- ESM NodeNext, .js suffix on internal imports
+- Tests use describe.skipIf where Supabase is required (pattern is established)
+
+ACCEPTANCE
+- pnpm test passes (158+ tests; expect ~6-10 new tests for redaction + rate-limit response shape)
+- pnpm typecheck clean in pos-api, pos-admin, pos-shared
+- grep -r 'console\.\(log\|warn\|error\|info\|debug\)' apps/pos-api/src --include='*.ts'
+  --exclude='*.test.ts' --exclude='boot-logger.ts' returns ZERO matches
+- 6 rapid sign-in attempts from a single IP — 6th returns 429 with retry_after_seconds
+- POST /v1/auth/sign-in with a 200kb body — returns 413 (payload too large)
+- Webhook signature verification still passes — run existing webhook tests
+- Unit test: redactSensitive({ user: { pin: '1234', name: 'Bob' } }) → user.pin === '[REDACTED]',
+  user.name === 'Bob'
+- Unit test: Sentry beforeSend on an event containing event.request.data.pin = '1234' →
+  the captured event has '[REDACTED]' there
+
+HARD STOP
+After scope is complete, STOP. Do not offer audit log viewer, discount engine, source map
+upload, or new features. Report:
+- Summary of what shipped
+- grep verification output for console.* calls (should be zero)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.
