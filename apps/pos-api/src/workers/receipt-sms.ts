@@ -5,6 +5,10 @@ import { sendSms } from "../lib/sms.js";
 import { getSupabaseClient } from "../lib/supabase.js";
 import { logger } from "../lib/logger.js";
 
+function centsToStr(cents: number): string {
+  return (cents / 100).toFixed(2);
+}
+
 // ---------------------------------------------------------------------------
 // Processor — exported for unit-testability
 // ---------------------------------------------------------------------------
@@ -22,15 +26,22 @@ export async function processReceiptSms(data: ReceiptSmsJobData): Promise<void> 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = client as any;
 
-  // Fetch tenant for display name
-  const { data: tenant } = await db
-    .from("tenants")
-    .select("name")
-    .eq("id", data.tenant_id)
-    .single();
+  // Fetch tenant and order in parallel (order needed for discount_total_cents)
+  const [tenantRes, orderRes] = await Promise.all([
+    db.from("tenants").select("name").eq("id", data.tenant_id).single(),
+    db.from("orders").select("discount_total_cents").eq("id", data.order_id).maybeSingle(),
+  ]);
 
-  const tenantName = (tenant as { name: string } | null)?.name ?? "the store";
-  const smsBody = `Thanks for your visit to ${tenantName}! Your receipt: ${data.receipt_url}\nReply STOP to opt out.`;
+  const tenantName = (tenantRes.data as { name: string } | null)?.name ?? "the store";
+  const discountTotalCents: number = (orderRes.data?.discount_total_cents as number | null) ?? 0;
+
+  const bodyLines = [`Thanks for your visit to ${tenantName}! Your receipt: ${data.receipt_url}`];
+  if (discountTotalCents > 0) {
+    bodyLines.push(`Discount: -$${centsToStr(discountTotalCents)}`);
+  }
+  bodyLines.push("Reply STOP to opt out.");
+
+  const smsBody = bodyLines.join("\n");
 
   // TCPA double-check — re-fetch the contact to verify opt-in is still active.
   // This guards against a customer revoking consent between the API call and

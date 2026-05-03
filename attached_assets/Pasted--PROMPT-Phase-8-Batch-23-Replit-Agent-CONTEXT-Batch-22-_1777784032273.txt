@@ -1,0 +1,115 @@
+▶ PROMPT [Phase 8 · Batch 23 · Replit Agent]
+
+CONTEXT
+- Batch 22 shipped per-order discount engine (migration 0017, apply/void endpoints,
+  recalcOrderTotals integration, admin Orders drawer UI). 199 tests pass.
+- B22 report flagged payments.ts as "still computes its own tax without discounts" and
+  punted it to P9. This is a CURRENT bug — admin-side discount apply ships right now, so
+  customers can be overcharged or receipts can show wrong tax the moment a discount is
+  applied. Must be closed before pilot.
+- Reports cron still has reports_daily.discounts hardcoded to zero (placeholder from B12).
+- Receipt templates (email HTML + plain text, SMS, web /r/:token) do not render discount
+  lines.
+- All three are downstream-of-discount cleanup. Bundle them so the discount engine is
+  truly end-to-end correct.
+
+GOAL
+Close the loop on B22 — every downstream consumer of order totals (payments, reports,
+receipts) reflects discounts correctly. Demo: admin applies a 10% discount on a $20 order,
+customer pays via card_stripe, the Stripe PaymentIntent amount matches the discounted
+total exactly, the emailed receipt shows the discount line, and the next day's
+end-of-day report shows the discount in the discounts column.
+
+SCOPE — BUILD THIS
+1. Audit apps/pos-api/src/routes/orders/payments.ts — verify:
+   (a) Charge amount used for PaymentIntent (or cash payment row insert) reads
+       order.total_cents from the DB at moment of payment creation, NOT a re-computation
+       from order_items.
+   (b) Any tax breakdown emitted in payment-confirm response, audit log payload, or
+       passed downstream to receipt rendering reflects the discount-adjusted value.
+   Report explicitly: what was correct, what was wrong, what was changed. If anything
+   was wrong, fix it by replacing the recomputation with a read of the persisted total.
+
+2. Update end-of-day reports cron worker (workers/end-of-day-rollup) — populate
+   reports_daily.discounts on snapshot insert. Sum applied_amount_cents from
+   order_discounts where voided_at IS NULL and the parent order's created_at falls in
+   the report date range (tenant-local).
+
+3. Update aggregateEndOfDay() in lib/reports.ts (the live aggregation path for "today")
+   — same change. Drop the hardcoded zero. Reuse the same query shape as the cron worker.
+
+4. Email receipt template (apps/pos-api/src/workers/receipt-email.ts) — HTML + plain
+   text fallback. Render below Subtotal:
+     Subtotal                  $20.00
+     Discount (employee comp)  −$2.00
+     Tax                        $1.11
+     Total                     $19.11
+   One line per non-voided discount. Reason in muted text in HTML; parenthetical in
+   plain text. Pull discount data from the order fetch already happening in the worker.
+
+5. SMS receipt template (apps/pos-api/src/workers/receipt-sms.ts) — add a "Discount: -$X.XX"
+   line for orders with non-zero discount_total_cents. Keep under single Telnyx segment
+   (160 chars) when possible; multi-segment acceptable if the discount pushes it over.
+
+6. Web receipt page /r/:token — render the same discount lines as email receipt. Token
+   already carries order_id; fetch order with discounts joined.
+
+7. Tests:
+   - payments.ts integration: order with discount applied → PaymentIntent amount equals
+     order.total_cents (skipIf no Supabase, but assert the read pattern in a unit test if
+     the integration test skips)
+   - aggregateEndOfDay with a discounted-order fixture → discounts column non-zero
+   - Email template render (HTML + plain text) with discount in input → output strings
+     contain "Discount" and the negative amount
+   - Web receipt render with discount in fixture → discount line in DOM
+
+SCOPE — DO NOT BUILD
+- Discount catalog (saved discounts) — separate batch if pilot signal warrants
+- Item-level discounts — post-MVP
+- Coupon / promo codes — post-MVP
+- Cashier-side discount in artifacts/nuatis-pos (prototype frozen)
+- Heartbeat / online-status for terminal readers (P9)
+- Anything new in artifacts/nuatis-pos
+- Receipt template customization (logo upload, footer text) — post-pilot
+- Discount-specific report breakdown tab in /reports — post-pilot
+- Re-computing totals "to be safe" anywhere downstream — single source of truth is
+  order.total_cents written by recalcOrderTotals()
+
+TECH CONSTRAINTS
+- All money in cents (int)
+- tenant_id from req.auth, never body
+- Charge amount MUST come from order.total_cents read at PaymentIntent creation. Never
+  recompute. The denormalized total exists specifically to be the source of truth.
+- Email template: HTML + plain-text fallback already exist from B11; update both in lockstep
+- SMS template: keep under 160 chars when possible; over is acceptable (Telnyx splits)
+- Web receipt: existing Cache-Control private max-age=86400 from B11 unchanged
+- Math.floor() consistency on any new math (ideally none — use stored values)
+- ESM NodeNext .js imports
+- Supabase-gated tests use describe.skipIf
+- Reports cron worker pattern: idempotent UPSERT to reports_daily; discount aggregation
+  fits inside the existing 5-min check loop, no new cron schedule
+
+ACCEPTANCE
+- pnpm test passes (199+; expect 4-6 new tests covering the integration + template renders)
+- pnpm typecheck clean in pos-api, pos-admin, pos-shared
+- payments.ts audit findings reported explicitly: correct? wrong? what was fixed?
+- Integration test asserts: order with $20 subtotal + 10% discount + 8.25% tax →
+  PaymentIntent amount = $19.11 (matches the canonical math case from B22)
+- aggregateEndOfDay returns the correct sum-of-non-voided-discount-amounts for a fixture
+  day with one discounted order
+- reports_daily snapshot inserted by cron contains correct discounts value
+- Email receipt HTML contains "Discount" + the negative amount string
+- SMS receipt body for a discounted order contains a "Discount" line
+- Web receipt rendered at /r/:token shows the discount line
+
+HARD STOP
+After scope is complete, STOP. Do not offer discount catalog, item-level, custom receipt
+templates, or new features. Report:
+- Summary of what shipped
+- payments.ts audit findings (was charge amount correct? was tax breakdown correct? what
+  was changed?)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.

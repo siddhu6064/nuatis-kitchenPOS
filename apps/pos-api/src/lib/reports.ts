@@ -17,7 +17,8 @@
  *   voids_cents        = Σ (order.subtotal_cents + order.tax_cents) for voided orders
  *                        filtered by voided_at (not created_at)
  *   refunds_cents      = Σ refund.amount_cents where refund.created_at is on the date
- *   discounts_cents    = 0 (MVP placeholder — no discount feature yet)
+ *   discounts_cents    = Σ order_discount.applied_amount_cents for non-voided discounts
+ *                        on paid orders that closed on the report date
  *   net_cents          = gross_sales_cents + tips_cents − refunds_cents
  */
 
@@ -83,6 +84,13 @@ export interface MenuItemRow {
   taxable: boolean;
 }
 
+export interface OrderDiscountRow {
+  id: string;
+  order_id: string;
+  applied_amount_cents: number;
+  voided_at: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Output shape (matches EndOfDayReportSchema minus the envelope fields)
 // ---------------------------------------------------------------------------
@@ -131,6 +139,7 @@ export interface AggregateParams {
   staffMembers: StaffMemberRow[];
   menuItems: MenuItemRow[];
   salesTaxBps: number; // reserved for future tax validation
+  discounts?: OrderDiscountRow[]; // non-voided discounts on paid orders
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +166,7 @@ export function toTenantDateStr(utcTimestamp: string | Date, tz: string): string
 
 export function aggregateEndOfDay(params: AggregateParams): AggregateResult {
   const { date, timezone, orders, orderItems, payments, refunds, staffMembers, menuItems } = params;
+  const discountRows = params.discounts ?? [];
 
   // Build lookup maps for O(1) access
   const menuItemMap = new Map<string, MenuItemRow>(menuItems.map((m) => [m.id, m]));
@@ -214,6 +224,13 @@ export function aggregateEndOfDay(params: AggregateParams): AggregateResult {
     return menuItem?.taxable ? sum + i.price_cents * i.qty : sum;
   }, 0);
 
+  // ── Discounts ─────────────────────────────────────────────────────────────
+  // Sum applied_amount_cents for non-voided discounts on paid orders on the date.
+
+  const discounts_cents = discountRows
+    .filter((d) => paidOrderIds.has(d.order_id) && !d.voided_at)
+    .reduce((sum, d) => sum + d.applied_amount_cents, 0);
+
   // ── Voids ─────────────────────────────────────────────────────────────────
 
   const voids_cents = voidedOrders.reduce(
@@ -230,7 +247,6 @@ export function aggregateEndOfDay(params: AggregateParams): AggregateResult {
 
   // ── Totals ────────────────────────────────────────────────────────────────
 
-  const discounts_cents = 0; // MVP placeholder — no discount feature yet
   const net_cents = gross_sales_cents + tips_cents - refunds_cents;
 
   const order_count = allDayOrders.length;

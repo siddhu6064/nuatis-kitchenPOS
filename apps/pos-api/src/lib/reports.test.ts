@@ -388,9 +388,55 @@ describe("aggregateEndOfDay — taxable items", () => {
   });
 });
 
-describe("aggregateEndOfDay — discounts_cents is always 0 in MVP", () => {
-  it("returns 0 for discounts_cents regardless of input", () => {
+describe("aggregateEndOfDay — discounts_cents", () => {
+  it("returns 0 when no discounts provided", () => {
     const result = aggregateEndOfDay(baseParams());
     expect(result.discounts_cents).toBe(0);
+  });
+
+  it("sums non-voided discount applied_amount_cents for paid orders on the date", () => {
+    const order = makeOrder({ id: "ord-1", subtotal_cents: 2000, tax_cents: 111 });
+    const payment = makePayment({ id: "p1", order_id: "ord-1", amount_cents: 1911 });
+    const discounts = [
+      { id: "d1", order_id: "ord-1", applied_amount_cents: 200, voided_at: null },
+    ];
+
+    const result = aggregateEndOfDay(
+      baseParams({ orders: [order], payments: [payment], discounts })
+    );
+
+    expect(result.discounts_cents).toBe(200);
+  });
+
+  it("excludes voided discounts from the sum", () => {
+    const order = makeOrder({ id: "ord-1", subtotal_cents: 2000, tax_cents: 111 });
+    const payment = makePayment({ id: "p1", order_id: "ord-1", amount_cents: 2111 });
+    const discounts = [
+      { id: "d1", order_id: "ord-1", applied_amount_cents: 200, voided_at: `${DATE}T11:00:00Z` },
+      { id: "d2", order_id: "ord-1", applied_amount_cents: 150, voided_at: null },
+    ];
+
+    const result = aggregateEndOfDay(
+      baseParams({ orders: [order], payments: [payment], discounts })
+    );
+
+    // Only the non-voided discount counts
+    expect(result.discounts_cents).toBe(150);
+  });
+
+  it("excludes discounts on orders not in the paid set for the date", () => {
+    const paidOrder = makeOrder({ id: "ord-1", subtotal_cents: 2000 });
+    const voidedOrder = makeOrder({ id: "ord-2", status: "voided", subtotal_cents: 1000, voided_at: `${DATE}T10:00:00Z` });
+    const payment = makePayment({ id: "p1", order_id: "ord-1", amount_cents: 2000 });
+    const discounts = [
+      { id: "d1", order_id: "ord-1", applied_amount_cents: 100, voided_at: null },
+      { id: "d2", order_id: "ord-2", applied_amount_cents: 300, voided_at: null }, // voided order — excluded
+    ];
+
+    const result = aggregateEndOfDay(
+      baseParams({ orders: [paidOrder, voidedOrder], payments: [payment], discounts })
+    );
+
+    expect(result.discounts_cents).toBe(100);
   });
 });

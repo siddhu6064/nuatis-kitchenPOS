@@ -25,95 +25,65 @@ vi.mock("../lib/email.js", () => ({
 const mockUpdate = vi.fn().mockReturnThis();
 const mockEqUpdate = vi.fn().mockResolvedValue({ error: null });
 
-function makeMockDb(overrides: Record<string, unknown> = {}) {
-  const mockSingle = vi.fn();
-  const mockMaybeSingle = vi.fn();
-  const mockSelect = vi.fn().mockReturnThis();
-  const mockInsert = vi.fn().mockReturnThis();
-  const mockNeq = vi.fn().mockReturnThis();
-  const mockEq = vi.fn().mockReturnThis();
+const DEMO_ORDER = {
+  id: "order-111",
+  order_number: 42,
+  tenant_id: "tenant-222",
+  location_id: "loc-333",
+  status: "paid",
+  opened_at: "2026-05-02T10:00:00Z",
+  closed_at: "2026-05-02T10:05:00Z",
+  subtotal_cents: 1000,
+  tax_cents: 82,
+  tip_cents: 150,
+  total_cents: 1232,
+};
 
-  const DEMO_ORDER = {
-    id: "order-111",
-    order_number: 42,
-    tenant_id: "tenant-222",
-    location_id: "loc-333",
-    status: "paid",
-    opened_at: "2026-05-02T10:00:00Z",
-    closed_at: "2026-05-02T10:05:00Z",
-    subtotal_cents: 1000,
-    tax_cents: 82,
-    tip_cents: 150,
-    total_cents: 1232,
-  };
+const DEMO_TENANT = { name: "Blue Bottle Coffee" };
+const DEMO_LOCATION = { name: "Main St", address: { street: "123 Main St", city: "Austin" } };
+const DEMO_ITEMS = [{ name_snapshot: "Latte", qty: 2, price_cents: 500 }];
+const DEMO_MSG = { id: 99 };
 
-  const DEMO_TENANT = { name: "Blue Bottle Coffee" };
-  const DEMO_LOCATION = { name: "Main St", address: { street: "123 Main St", city: "Austin" } };
-  const DEMO_ITEMS = [
-    { name_snapshot: "Latte", qty: 2, price_cents: 500 },
-  ];
-  const DEMO_MSG = { id: 99 };
-
-  // Track which table is being queried
-  let currentTable = "";
-
+/**
+ * Build a mock Supabase-like client.
+ * Each from() call captures its table in a closure so concurrent Promise.all
+ * calls don't clobber a shared variable.
+ */
+function makeMockDb() {
   const fromFn = vi.fn().mockImplementation((table: string) => {
-    currentTable = table;
+    // Resolve a terminal value for the given table
+    const resolveData = (method: "single" | "maybeSingle" | "array") => {
+      if (table === "orders")         return method === "single"      ? { data: DEMO_ORDER,    error: null } : { data: DEMO_ORDER,    error: null };
+      if (table === "tenants")        return method === "single"      ? { data: DEMO_TENANT,   error: null } : { data: DEMO_TENANT,   error: null };
+      if (table === "locations")      return { data: DEMO_LOCATION, error: null };
+      if (table === "payments")       return { data: null,           error: null };
+      if (table === "order_items")    return method === "array"       ? { data: DEMO_ITEMS,    error: null } : { data: null, error: null };
+      if (table === "order_discounts")return { data: [],             error: null };
+      if (table === "email_messages") return { data: DEMO_MSG,       error: null };
+      return { data: null, error: null };
+    };
+
+    // Chain builder — each method returns a new object with all chain methods
+    const chain = (): Record<string, unknown> => ({
+      select: vi.fn().mockImplementation(() => chain()),
+      eq:     vi.fn().mockImplementation(() => chain()),
+      neq:    vi.fn().mockImplementation(() => Promise.resolve(resolveData("array"))),
+      is:     vi.fn().mockImplementation(() => Promise.resolve(resolveData("array"))),
+      single:      vi.fn().mockImplementation(() => Promise.resolve(resolveData("single"))),
+      maybeSingle: vi.fn().mockImplementation(() => Promise.resolve(resolveData("maybeSingle"))),
+    });
+
     return {
-      select: mockSelect,
-      insert: mockInsert,
-      update: (_data: unknown) => ({
-        eq: () => Promise.resolve({ error: null }),
-      }),
-      eq: mockEq,
-      neq: mockNeq,
-      single: () => {
-        if (currentTable === "orders") return Promise.resolve({ data: DEMO_ORDER, error: null });
-        if (currentTable === "tenants") return Promise.resolve({ data: DEMO_TENANT, error: null });
-        if (currentTable === "email_messages") return Promise.resolve({ data: DEMO_MSG, error: null });
-        return Promise.resolve({ data: null, error: null });
-      },
-      maybeSingle: () => {
-        if (currentTable === "locations") return Promise.resolve({ data: DEMO_LOCATION, error: null });
-        if (currentTable === "payments") return Promise.resolve({ data: null, error: null });
-        return Promise.resolve({ data: null, error: null });
-      },
-      ...overrides,
+      ...chain(),
+      insert: vi.fn().mockImplementation(() => ({
+        select: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue(resolveData("single")),
+      })),
+      update: vi.fn().mockImplementation((_data: unknown) => ({
+        eq: vi.fn().mockResolvedValue({ error: null }),
+      })),
     };
   });
-
-  // For order_items: the chain is .from().select().eq().neq() → array
-  mockSelect.mockImplementation(function () {
-    return {
-      eq: () => ({
-        neq: () => Promise.resolve({ data: DEMO_ITEMS, error: null }),
-        single: () => {
-          if (currentTable === "orders") return Promise.resolve({ data: DEMO_ORDER, error: null });
-          if (currentTable === "tenants") return Promise.resolve({ data: DEMO_TENANT, error: null });
-          return Promise.resolve({ data: null, error: null });
-        },
-        maybeSingle: () => {
-          if (currentTable === "locations") return Promise.resolve({ data: DEMO_LOCATION, error: null });
-          if (currentTable === "payments") return Promise.resolve({ data: null, error: null });
-          return Promise.resolve({ data: null, error: null });
-        },
-        eq: () => ({
-          maybeSingle: () => {
-            if (currentTable === "payments") return Promise.resolve({ data: { method: "card_mock" }, error: null });
-            return Promise.resolve({ data: null, error: null });
-          },
-        }),
-      }),
-      single: () => Promise.resolve({ data: null, error: null }),
-    };
-  });
-
-  // For insert: returns { select: fn that returns { single: fn } }
-  mockInsert.mockImplementation(() => ({
-    select: () => ({
-      single: () => Promise.resolve({ data: DEMO_MSG, error: null }),
-    }),
-  }));
 
   return { from: fromFn };
 }
@@ -123,7 +93,7 @@ vi.mock("../lib/supabase.js", () => ({
 }));
 
 import { getSupabaseClient } from "../lib/supabase.js";
-import { processReceiptEmail } from "./receipt-email.js";
+import { processReceiptEmail, renderReceiptHtml, renderReceiptText } from "./receipt-email.js";
 
 describe("processReceiptEmail", () => {
   beforeEach(() => {
@@ -210,5 +180,104 @@ describe("processReceiptEmail", () => {
     await expect(processReceiptEmail(JOB_DATA)).rejects.toThrow("Resend rate limit");
     expect(lastUpdateData).toMatchObject({ status: "failed" });
     expect((lastUpdateData as { error: string }).error).toMatch(/Resend rate limit/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure renderer tests — no DB or BullMQ needed
+// ---------------------------------------------------------------------------
+
+const RENDER_ORDER: Record<string, unknown> = {
+  id: "order-111",
+  order_number: 42,
+  subtotal_cents: 2000,
+  tax_cents: 148,
+  tip_cents: 0,
+  total_cents: 1948,
+  closed_at: "2026-05-02T10:05:00Z",
+};
+
+const RENDER_ITEMS = [{ name_snapshot: "Cold Brew", qty: 2, price_cents: 1000 }];
+const RENDER_TENANT = { name: "Blue Bottle Coffee" };
+const RENDER_RECEIPT_URL = "http://localhost:3002/r/some-token";
+
+describe("renderReceiptHtml — discount lines", () => {
+  it("renders a Discount row with reason and negative amount for each non-voided discount", () => {
+    const html = renderReceiptHtml({
+      order: RENDER_ORDER,
+      items: RENDER_ITEMS,
+      discounts: [{ reason: "employee comp", applied_amount_cents: 200 }],
+      tenant: RENDER_TENANT,
+      location: null,
+      payment: null,
+      receipt_url: RENDER_RECEIPT_URL,
+    });
+
+    expect(html).toContain("Discount");
+    expect(html).toContain("employee comp");
+    expect(html).toContain("−$2.00");
+  });
+
+  it("renders multiple discount rows in order", () => {
+    const html = renderReceiptHtml({
+      order: RENDER_ORDER,
+      items: RENDER_ITEMS,
+      discounts: [
+        { reason: "happy hour", applied_amount_cents: 100 },
+        { reason: "manager override", applied_amount_cents: 300 },
+      ],
+      tenant: RENDER_TENANT,
+      location: null,
+      payment: null,
+      receipt_url: RENDER_RECEIPT_URL,
+    });
+
+    expect(html).toContain("happy hour");
+    expect(html).toContain("−$1.00");
+    expect(html).toContain("manager override");
+    expect(html).toContain("−$3.00");
+  });
+
+  it("omits Discount rows when discounts array is empty", () => {
+    const html = renderReceiptHtml({
+      order: RENDER_ORDER,
+      items: RENDER_ITEMS,
+      discounts: [],
+      tenant: RENDER_TENANT,
+      location: null,
+      payment: null,
+      receipt_url: RENDER_RECEIPT_URL,
+    });
+
+    expect(html).not.toContain("Discount");
+    expect(html).not.toContain("−$");
+  });
+});
+
+describe("renderReceiptText — discount lines", () => {
+  it("includes Discount parenthetical line for non-voided discounts", () => {
+    const text = renderReceiptText({
+      order: RENDER_ORDER,
+      items: RENDER_ITEMS,
+      discounts: [{ reason: "employee comp", applied_amount_cents: 200 }],
+      tenant: RENDER_TENANT,
+      receipt_url: RENDER_RECEIPT_URL,
+    });
+
+    expect(text).toContain("Discount");
+    expect(text).toContain("employee comp");
+    expect(text).toContain("-$2.00");
+  });
+
+  it("omits discount lines when no discounts", () => {
+    const text = renderReceiptText({
+      order: RENDER_ORDER,
+      items: RENDER_ITEMS,
+      discounts: [],
+      tenant: RENDER_TENANT,
+      receipt_url: RENDER_RECEIPT_URL,
+    });
+
+    expect(text).not.toContain("Discount");
   });
 });

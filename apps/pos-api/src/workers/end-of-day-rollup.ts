@@ -13,7 +13,7 @@
 
 import { Worker, type Job } from "bullmq";
 import { getRedisConnection, getEodRollupQueue, type EodRollupJobData } from "../lib/queue.js";
-import { aggregateEndOfDay, type PaymentRow } from "../lib/reports.js";
+import { aggregateEndOfDay, type PaymentRow, type OrderDiscountRow } from "../lib/reports.js";
 import { getSupabaseClient } from "../lib/supabase.js";
 import { sendReceiptEmail, type SendEmailParams } from "../lib/email.js";
 import { logger } from "../lib/logger.js";
@@ -256,22 +256,25 @@ export async function processRollup(
   let payments: PaymentRow[] = [];
   let staffMembers: unknown[] = [];
   let menuItems: unknown[] = [];
+  let discounts: OrderDiscountRow[] = [];
   let refunds: Array<{ id: string; order_id: string; amount_cents: number; created_at: string }> = [];
 
   if (orderIds.length > 0) {
     logger.info({ tenant_id, date, order_count: orderIds.length }, "[worker:end-of-day-rollup] fetching line items and payments");
 
-    const [oi, pay, staff, menu] = await Promise.all([
+    const [oi, pay, staff, menu, disc] = await Promise.all([
       db.from("order_items").select("id, order_id, menu_item_id, name_snapshot, qty, price_cents, status").in("order_id", orderIds),
       db.from("payments").select("id, order_id, method, amount_cents, tip_cents, status, created_at").in("order_id", orderIds),
       db.from("staff_members").select("id, full_name").eq("tenant_id", tenant_id),
       db.from("menu_items").select("id, taxable").eq("tenant_id", tenant_id),
+      db.from("order_discounts").select("id, order_id, applied_amount_cents, voided_at").in("order_id", orderIds),
     ]);
 
     orderItems = oi.data ?? [];
     payments = pay.data ?? [];
     staffMembers = staff.data ?? [];
     menuItems = menu.data ?? [];
+    discounts = (disc.data ?? []) as OrderDiscountRow[];
 
     const paymentIds = payments.map((p) => p.id);
     if (paymentIds.length > 0) {
@@ -304,6 +307,7 @@ export async function processRollup(
     cashEvents: [],
     staffMembers: staffMembers as Parameters<typeof aggregateEndOfDay>[0]["staffMembers"],
     menuItems: menuItems as Parameters<typeof aggregateEndOfDay>[0]["menuItems"],
+    discounts,
     salesTaxBps: 825,
   });
 

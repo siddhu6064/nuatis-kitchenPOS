@@ -36,6 +36,12 @@ async function confirmPayment(
 //   Returns client_secret for the Terminal Web SDK to collectPaymentMethod.
 //   The order stays open — it is confirmed when payment_intent.succeeded
 //   webhook fires (see routes/stripe/webhook.ts).
+//
+// Charge amount sourcing:
+//   recalcOrderTotals() writes subtotal, discount_total, tax, and total to the
+//   order row. We then re-read order.total_cents as the single source of truth
+//   for the charge amount — no recomputation here. This ensures discounts are
+//   always reflected in the PaymentIntent amount and cash payment row.
 // ---------------------------------------------------------------------------
 paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Promise<void> => {
   const client = getSupabaseClient();
@@ -50,7 +56,7 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
   const db = client as any;
 
   // Fetch order — must be open or fired
-  const { data: order, error: orderErr } = await db.from("orders").select("id, status, location_id, subtotal_cents").eq("id", orderId).eq("tenant_id", tenantId).maybeSingle();
+  const { data: order, error: orderErr } = await db.from("orders").select("id, status, location_id").eq("id", orderId).eq("tenant_id", tenantId).maybeSingle();
   if (orderErr) { res.status(500).json({ error: { code: "internal_error", message: orderErr.message } }); return; }
   if (!order) { res.status(404).json({ error: { code: "not_found", message: "Order not found" } }); return; }
   if (!["open", "fired"].includes(order.status as string)) { res.status(409).json({ error: { code: "conflict", message: `Cannot pay order with status '${order.status as string}'` } }); return; }
@@ -78,13 +84,26 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
     cashSessionId = session.id as string;
   }
 
-  // Calculate totals
-  const subtotal_cents = await recalcOrderTotals(client, orderId, tenantId);
-  const { data: location } = await db.from("locations").select("sales_tax_bps").eq("id", order.location_id).maybeSingle();
-  const salesTaxBps: number = (location?.sales_tax_bps as number) ?? 825;
-  const tax_cents = Math.round((subtotal_cents * salesTaxBps) / 10000);
+  // Recalc writes correct subtotal / discount_total / tax / total to the order row.
+  // Never recompute here — read the stored total as the single source of truth.
+  await recalcOrderTotals(client, orderId, tenantId);
+
+  const { data: storedTotals, error: totalsErr } = await db
+    .from("orders")
+    .select("total_cents, tax_cents")
+    .eq("id", orderId)
+    .single();
+
+  if (totalsErr || !storedTotals) {
+    res.status(500).json({ error: { code: "internal_error", message: "Failed to read order totals" } });
+    return;
+  }
+
+  const stored_total_cents: number = storedTotals.total_cents as number;
+  const tax_cents: number = storedTotals.tax_cents as number;
   const tip_cents = parsed.data.tip_cents;
-  const total_cents = subtotal_cents + tax_cents + tip_cents;
+  // Payment amount includes tip; order.total_cents excludes tip (tip tracked separately)
+  const total_cents = stored_total_cents + tip_cents;
 
   // ── Stripe card_stripe — create PaymentIntent ─────────────────────────────
   let stripePaymentIntentId: string | null = null;
@@ -159,10 +178,10 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
 
   if (paymentErr) { res.status(500).json({ error: { code: "internal_error", message: paymentErr.message } }); return; }
 
-  // Auto-confirm for cash/card_mock
+  // Auto-confirm for cash/card_mock — recalcOrderTotals already wrote correct
+  // tax_cents / total_cents to the order, so we only update status + tip here.
   if (isAutoConfirm) {
     await confirmPayment(db, payment.id, orderId, tenantId, tip_cents);
-    await db.from("orders").update({ tax_cents, total_cents }).eq("id", orderId).eq("tenant_id", tenantId);
   }
 
   const staffId = req.auth!.kind === "terminal" ? req.auth!.staff_id : req.auth!.user_id;
@@ -178,7 +197,7 @@ paymentsRouter.post("/", requireAuth(), async (req: Request, res: Response): Pro
     });
   }
 
-  writeAuditLog(client, { tenant_id: tenantId, staff_id: staffId, action: "payment_created", target_type: "payment", target_id: payment.id, payload: { method: parsed.data.method, amount_cents: total_cents, auto_confirmed: isAutoConfirm, cash_session_id: cashSessionId }, ip_address: req.ip });
+  writeAuditLog(client, { tenant_id: tenantId, staff_id: staffId, action: "payment_created", target_type: "payment", target_id: payment.id, payload: { method: parsed.data.method, amount_cents: total_cents, tax_cents, auto_confirmed: isAutoConfirm, cash_session_id: cashSessionId }, ip_address: req.ip });
 
   // Return fresh order state alongside payment
   const { data: updatedOrder } = await db.from("orders").select("*").eq("id", orderId).single();

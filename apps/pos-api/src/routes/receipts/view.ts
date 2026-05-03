@@ -45,8 +45,9 @@ receiptViewRouter.get("/:token", async (req: Request, res: Response): Promise<vo
 
   if (!order) { res.status(404).send("Receipt not found."); return; }
 
-  const [{ data: items }, { data: tenant }, { data: payment }] = await Promise.all([
+  const [{ data: items }, { data: discounts }, { data: tenant }, { data: payment }] = await Promise.all([
     db.from("order_items").select("name_snapshot, qty, price_cents, status").eq("order_id", payload.order_id).neq("status", "voided"),
+    db.from("order_discounts").select("reason, applied_amount_cents").eq("order_id", payload.order_id).is("voided_at", null),
     db.from("tenants").select("name").eq("id", payload.tenant_id).single(),
     db.from("payments").select("method, amount_cents").eq("order_id", payload.order_id).eq("status", "succeeded").maybeSingle(),
   ]);
@@ -77,6 +78,13 @@ receiptViewRouter.get("/:token", async (req: Request, res: Response): Promise<vo
     </tr>`)
     .join("");
 
+  const discountRows = ((discounts ?? []) as Array<{ reason: string; applied_amount_cents: number }>)
+    .map((d) => `<tr class="discount-row">
+      <td>Discount <span class="discount-reason">(${escHtml(d.reason)})</span></td>
+      <td style="text-align:right;color:#DC2626;">−$${centsToStr(d.applied_amount_cents)}</td>
+    </tr>`)
+    .join("");
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -100,6 +108,8 @@ receiptViewRouter.get("/:token", async (req: Request, res: Response): Promise<vo
     .divider{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
     .totals td{padding:3px 0;font-size:14px;color:#374151}
     .totals .total td{font-weight:700;color:#111827;font-size:16px;padding-top:8px}
+    .discount-row td{color:#6B7280}
+    .discount-reason{color:#9CA3AF;font-size:12px}
     .payment{font-size:12px;color:#9CA3AF;text-align:center;margin-top:8px}
     .footer{font-size:11px;color:#9CA3AF;text-align:center;margin-top:16px}
     @media print{body{background:#fff;padding:0}.card{border:none;border-radius:0}}
@@ -123,6 +133,7 @@ receiptViewRouter.get("/:token", async (req: Request, res: Response): Promise<vo
     <table class="totals">
       <tbody>
         <tr><td>Subtotal</td><td style="text-align:right">$${centsToStr(subtotal)}</td></tr>
+        ${discountRows}
         <tr><td>Tax</td><td style="text-align:right">$${centsToStr(tax)}</td></tr>
         ${tip > 0 ? `<tr><td>Tip</td><td style="text-align:right">$${centsToStr(tip)}</td></tr>` : ""}
         <tr class="total"><td>Total</td><td style="text-align:right">$${centsToStr(total)}</td></tr>

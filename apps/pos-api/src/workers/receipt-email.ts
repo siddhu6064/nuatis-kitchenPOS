@@ -13,15 +13,21 @@ function centsToStr(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-function renderReceiptHtml(params: {
+export interface DiscountLine {
+  reason: string;
+  applied_amount_cents: number;
+}
+
+export function renderReceiptHtml(params: {
   order: Record<string, unknown>;
   items: Array<{ name_snapshot: string; qty: number; price_cents: number }>;
+  discounts: DiscountLine[];
   tenant: { name: string };
   location: { name: string; address?: unknown } | null;
   payment: { method: string } | null;
   receipt_url: string;
 }): string {
-  const { order, items, tenant, location, payment, receipt_url } = params;
+  const { order, items, discounts, tenant, location, payment, receipt_url } = params;
   const orderNum = (order["order_number"] as number | null) ?? (order["id"] as string).slice(0, 8);
   const subtotal = order["subtotal_cents"] as number;
   const tax = order["tax_cents"] as number;
@@ -36,6 +42,16 @@ function renderReceiptHtml(params: {
           <td style="padding:4px 0;color:#374151;">${i.name_snapshot}</td>
           <td style="padding:4px 0;color:#6B7280;text-align:center;">×${i.qty}</td>
           <td style="padding:4px 0;color:#374151;text-align:right;">$${centsToStr(i.price_cents * i.qty)}</td>
+        </tr>`
+    )
+    .join("");
+
+  const discountRows = discounts
+    .map(
+      (d) =>
+        `<tr>
+          <td style="padding:3px 0;color:#6B7280;font-size:13px;">Discount <span style="color:#9CA3AF;font-size:12px;">(${d.reason})</span></td>
+          <td style="padding:3px 0;color:#DC2626;font-size:13px;text-align:right;">−$${centsToStr(d.applied_amount_cents)}</td>
         </tr>`
     )
     .join("");
@@ -68,6 +84,7 @@ function renderReceiptHtml(params: {
           <td style="padding:3px 0;color:#6B7280;font-size:13px;">Subtotal</td>
           <td style="padding:3px 0;color:#374151;font-size:13px;text-align:right;">$${centsToStr(subtotal)}</td>
         </tr>
+        ${discountRows}
         <tr>
           <td style="padding:3px 0;color:#6B7280;font-size:13px;">Tax</td>
           <td style="padding:3px 0;color:#374151;font-size:13px;text-align:right;">$${centsToStr(tax)}</td>
@@ -103,21 +120,34 @@ function renderReceiptHtml(params: {
 </body></html>`;
 }
 
-function renderReceiptText(params: {
+export function renderReceiptText(params: {
   order: Record<string, unknown>;
   items: Array<{ name_snapshot: string; qty: number; price_cents: number }>;
+  discounts: DiscountLine[];
   tenant: { name: string };
   receipt_url: string;
 }): string {
-  const { order, items, tenant, receipt_url } = params;
+  const { order, items, discounts, tenant, receipt_url } = params;
   const orderNum = (order["order_number"] as number | null) ?? (order["id"] as string).slice(0, 8);
+  const subtotal = order["subtotal_cents"] as number;
+  const tax = order["tax_cents"] as number;
+  const tip = order["tip_cents"] as number;
   const total = order["total_cents"] as number;
+
+  const discountLines = discounts.map(
+    (d) => `Discount (${d.reason}): -$${centsToStr(d.applied_amount_cents)}`
+  );
+
   const lines = [
     `Receipt from ${tenant.name}`,
     `Order #${orderNum}`,
     "",
     ...items.map((i) => `  ${i.name_snapshot} x${i.qty}  $${centsToStr(i.price_cents * i.qty)}`),
     "",
+    `Subtotal: $${centsToStr(subtotal)}`,
+    ...discountLines,
+    `Tax: $${centsToStr(tax)}`,
+    ...(tip > 0 ? [`Tip: $${centsToStr(tip)}`] : []),
     `Total: $${centsToStr(total)}`,
     "",
     `View online: ${receipt_url}`,
@@ -152,36 +182,46 @@ export async function processReceiptEmail(
     .single();
   if (orderErr) throw new Error(`fetch order: ${orderErr.message}`);
 
-  // Fetch non-voided items
-  const { data: items } = await db
-    .from("order_items")
-    .select("name_snapshot, qty, price_cents")
-    .eq("order_id", data.order_id)
-    .neq("status", "voided");
+  // Fetch non-voided items, discounts, tenant, location, and payment in parallel
+  const [itemsRes, discountsRes, tenantRes, locationRes, paymentRes] = await Promise.all([
+    db
+      .from("order_items")
+      .select("name_snapshot, qty, price_cents")
+      .eq("order_id", data.order_id)
+      .neq("status", "voided"),
+    db
+      .from("order_discounts")
+      .select("reason, applied_amount_cents")
+      .eq("order_id", data.order_id)
+      .is("voided_at", null),
+    db
+      .from("tenants")
+      .select("name")
+      .eq("id", data.tenant_id)
+      .single(),
+    db
+      .from("locations")
+      .select("name, address")
+      .eq("id", order.location_id)
+      .maybeSingle(),
+    db
+      .from("payments")
+      .select("method")
+      .eq("order_id", data.order_id)
+      .eq("status", "succeeded")
+      .maybeSingle(),
+  ]);
 
-  // Fetch tenant + location
-  const { data: tenant } = await db
-    .from("tenants")
-    .select("name")
-    .eq("id", data.tenant_id)
-    .single();
+  const items = (itemsRes.data ?? []) as Array<{ name_snapshot: string; qty: number; price_cents: number }>;
+  const discounts = (discountsRes.data ?? []) as DiscountLine[];
+  const tenant = tenantRes.data as { name: string };
+  const location = locationRes.data as { name: string; address?: unknown } | null;
+  const payment = paymentRes.data as { method: string } | null;
 
-  const { data: location } = await db
-    .from("locations")
-    .select("name, address")
-    .eq("id", order.location_id)
-    .maybeSingle();
-
-  // Fetch succeeded payment (for method display)
-  const { data: payment } = await db
-    .from("payments")
-    .select("method")
-    .eq("order_id", data.order_id)
-    .eq("status", "succeeded")
-    .maybeSingle();
+  if (tenantRes.error) throw new Error(`fetch tenant: ${tenantRes.error.message}`);
 
   // Insert email_messages row BEFORE sending (so we have a record even on failure)
-  const subject = `Receipt from ${(tenant as { name: string }).name} — Order #${(order["order_number"] as number | null) ?? (order["id"] as string).slice(0, 8)}`;
+  const subject = `Receipt from ${tenant.name} — Order #${(order["order_number"] as number | null) ?? (order["id"] as string).slice(0, 8)}`;
 
   const { data: msg, error: msgErr } = await db
     .from("email_messages")
@@ -199,17 +239,19 @@ export async function processReceiptEmail(
 
   const html = renderReceiptHtml({
     order: order as Record<string, unknown>,
-    items: (items ?? []) as Array<{ name_snapshot: string; qty: number; price_cents: number }>,
-    tenant: tenant as { name: string },
-    location: location as { name: string; address?: unknown } | null,
-    payment: payment as { method: string } | null,
+    items,
+    discounts,
+    tenant,
+    location,
+    payment,
     receipt_url: data.receipt_url,
   });
 
   const text = renderReceiptText({
     order: order as Record<string, unknown>,
-    items: (items ?? []) as Array<{ name_snapshot: string; qty: number; price_cents: number }>,
-    tenant: tenant as { name: string },
+    items,
+    discounts,
+    tenant,
     receipt_url: data.receipt_url,
   });
 
