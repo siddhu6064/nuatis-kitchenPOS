@@ -1,0 +1,89 @@
+▶ PROMPT [Phase 8 · Batch 21 · Replit Agent]
+
+CONTEXT
+- Batch 20 added redactSensitive + wired it into boot-logger and Sentry beforeSend.
+- Gap from B20: pino is the actual runtime logger for workers and routes; redactSensitive
+  is NOT wired into pino. PINs / passwords / API keys logged via pino still leak.
+- Audit log infrastructure is end-to-end complete (audit_log table, fire-and-forget writes
+  from every state-changing endpoint, sensitive fields already redacted at write time per
+  locked convention) but there is no admin API or UI to view it. Owners need this for pilot
+  to answer "who voided that order?", "when did the cashier do that pay-out?".
+- 174 tests pass.
+
+GOAL
+Close the pino redaction gap + ship an owner-facing audit log viewer. Demo: owner opens
+/audit, filters action='void' for yesterday, sees the staff name + reason for each void.
+
+SCOPE — BUILD THIS
+1. Wire redactSensitive into every pino instance — choose either (a) wrap pino log methods
+   in a thin module that calls redactSensitive on the merging object before delegating to
+   pino, or (b) configure pino's built-in `redact` option against a path list derived from
+   SENSITIVE_KEYS exported from the existing redact.ts module. Either approach is acceptable
+   so long as the acceptance test below passes. Do NOT duplicate the SENSITIVE_KEYS list.
+
+2. GET /v1/audit-log endpoint in pos-api — paginated (limit default 50, max 200). Query
+   params: action_type (string), staff_id (uuid), from (ISO date), to (ISO date), cursor
+   (opaque string). Owner+manager only; tenant_id from req.auth. Returns
+   { entries: [...], next_cursor: string|null }. Each entry: id, occurred_at, action_type,
+   staff_id, staff_name (joined), target_type, target_id, payload, ip_address.
+
+3. GET /v1/audit-log.csv — same query params, CSV response. Owner-only (return 403 for
+   manager). Use the existing CSV pattern from /v1/reports/end-of-day.csv.
+
+4. Admin /audit page — server component with filters driven by URLSearchParams: action_type
+   dropdown (populate from distinct values returned in the API), staff dropdown (from
+   /v1/staff), from + to date pickers. Table with the entry columns above. Click a row to
+   expand a payload view showing the JSON in a monospace block.
+
+5. Owner-only "Export CSV" button — visible to owner role, hidden for manager. Posts to
+   the .csv endpoint with current filter state.
+
+6. Admin nav — add "Audit" link between Devices and Settings using a lucide-react icon
+   (ScrollText or History).
+
+SCOPE — DO NOT BUILD
+- Audit log mutation endpoints (audit is append-only; never expose UPDATE/DELETE)
+- Realtime audit feed / live tail (post-MVP)
+- Retention / archival policies (audit_log grows forever for now)
+- Custom action_type taxonomy beyond what already exists in audit_log
+- Discount engine, tip pool, gift cards, loyalty (post-MVP)
+- Heartbeat / online-status for terminal readers (P9)
+- Anything new in artifacts/nuatis-pos (prototype is frozen)
+- Source map upload to Sentry (deployment-day)
+- Re-redacting payloads on read — they were redacted at write time, return as-is
+
+TECH CONSTRAINTS
+- Audit entries are already redacted at write time — do NOT re-redact on read
+- Pagination cursor = base64(occurred_at + id) so order is stable under same-timestamp entries
+- Date filters use Intl.DateTimeFormat("en-CA") for ISO date strings (existing convention)
+- Role gating: extend existing role middleware pattern; do NOT introduce a new role
+- /audit page: server component fetches, client component only for row-expand interaction
+- router.refresh() on filter change is fine; no router.replace acrobatics needed
+- Pino: use SENSITIVE_KEYS from existing redact.ts; do not duplicate the list
+- Express router annotation: const auditLogRouter: IRouter = Router()
+- ESM NodeNext .js imports
+- Supabase-gated tests use describe.skipIf
+
+ACCEPTANCE
+- pnpm test passes (174+; expect 4-6 new tests for the audit endpoint shape, pagination,
+  CSV gating, and pino redaction)
+- pnpm typecheck clean in pos-api, pos-admin, pos-shared
+- Pino redaction unit test: log via a pino instance with { user: { pin: '1234' } } in ctx;
+  capture the emitted JSON; assert user.pin === '[REDACTED]'
+- /audit renders empty state when audit_log empty for the selected range
+- Filtering action_type='void' returns only void entries (verify by fixture)
+- Pagination: 60-row dataset returns 50 entries + non-null next_cursor on first call;
+  passing the cursor returns remaining 10 + null next_cursor
+- CSV endpoint returns 403 when role=manager
+- "Export CSV" button is not rendered for manager role on the /audit page
+
+HARD STOP
+After scope is complete, STOP. Do not offer realtime audit feeds, retention policies,
+custom taxonomies, or new features. Report:
+- Summary of what shipped
+- Pino redaction approach chosen (wrapper module or built-in `redact` option)
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.
