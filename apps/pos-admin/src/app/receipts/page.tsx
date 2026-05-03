@@ -1,38 +1,57 @@
+import { auth } from "@/auth";
 import { DashboardShell } from "@/components/dashboard-shell";
-import { Receipt } from "lucide-react";
+import { ReceiptsHistory } from "@/components/receipts/ReceiptsHistory";
+import { getReceiptsHistoryServer } from "@/lib/api/receipts-history";
+import type { ReceiptHistoryEntry } from "@/lib/api/receipts-history";
 
-export default function ReceiptsPage() {
+const PAGE_SIZE = 50;
+
+interface ReceiptsPageProps {
+  searchParams: {
+    page?: string;
+    channel?: string;
+    status?: string;
+  };
+}
+
+export default async function ReceiptsPage({ searchParams }: ReceiptsPageProps) {
+  const session = await auth();
+  const posJwt = session?.user?.posJwt ?? "";
+
+  const page = Math.max(1, parseInt(searchParams.page ?? "1", 10));
+  const channel = (searchParams.channel ?? "") as "email" | "sms" | "";
+  const status = (searchParams.status ?? "") as "queued" | "sent" | "failed" | "bounced" | "";
+
+  let initialEntries: ReceiptHistoryEntry[] = [];
+  let initialTotal = 0;
+
+  try {
+    const result = await getReceiptsHistoryServer(posJwt, {
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+      channel: channel || undefined,
+      status: status || undefined,
+    });
+    if (result) {
+      initialEntries = result.entries;
+      initialTotal = result.total_count;
+    }
+  } catch {
+    // render with empty
+  }
+
   return (
     <DashboardShell>
       <div className="max-w-5xl mx-auto">
-        <h1 className="font-serif text-3xl font-bold text-slate-900 mb-2">Receipts</h1>
-        <ComingSoon
-          icon={<Receipt className="h-12 w-12 text-slate-300" />}
-          title="Receipt history coming soon"
-          description="This screen will show all sent receipts with delivery status, allowing you to resend or view web receipt links."
+        <ReceiptsHistory
+          initialEntries={initialEntries}
+          initialTotal={initialTotal}
+          posJwt={posJwt}
+          page={page}
+          channel={channel}
+          status={status}
         />
       </div>
     </DashboardShell>
-  );
-}
-
-function ComingSoon({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mt-12 flex flex-col items-center justify-center text-center gap-4 py-16 rounded-2xl border-2 border-dashed border-slate-200">
-      {icon}
-      <h2 className="font-serif text-xl font-semibold text-slate-700">{title}</h2>
-      <p className="max-w-sm text-sm text-slate-400 leading-relaxed">{description}</p>
-      <span className="mt-2 inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-medium text-amber-700">
-        Coming in Batch 14
-      </span>
-    </div>
   );
 }

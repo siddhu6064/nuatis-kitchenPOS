@@ -1,0 +1,232 @@
+▶ PROMPT [Phase 0 · Batch 16 · Replit Agent]
+
+CONTEXT
+Phase 0 Batches 1-15 complete. Admin app has working sign-up, dashboard, menu, orders, cash, reports. Three placeholder pages remain: /staff, /receipts, /settings. This batch closes them all + adds the supporting pos-api endpoints. After this batch the admin app is feature-complete for MVP. Stripe Terminal real integration is the next major work.
+
+GOAL
+Working /staff (list + invite + role change + deactivate), /receipts (history list + resend), /settings (tenant config form). All three powered by new pos-api endpoints. After this batch, an owner can fully self-serve their POS configuration without Sid intervening.
+
+SCOPE — BUILD THIS
+
+═══════════════════════════════════════
+SECTION 1 — pos-shared schemas
+═══════════════════════════════════════
+
+1. Update packages/pos-shared/src/staff.ts:
+   - Add InviteStaffRequestSchema = z.object({ full_name: z.string().min(1).max(100), email: EmailSchema, role: StaffRoleSchema, pin: PinSchema.optional(), location_ids: z.array(z.string().uuid()).min(1) })
+   - Add UpdateStaffRequestSchema = InviteStaffRequestSchema.partial().extend({ active: z.boolean().optional() })
+   - Add StaffResponseSchema (full staff_member shape minus password_hash and pin_hash for safety)
+   - Export inferred types
+
+2. Create packages/pos-shared/src/receipts-history.ts:
+   - ReceiptHistoryEntrySchema = z.object({ id: z.string().uuid(), order_id: z.string().uuid(), order_number: z.number().int(), order_total_cents: z.number().int(), channel: z.enum(['email', 'sms']), recipient: z.string(), status: z.enum(['queued', 'sent', 'failed', 'bounced']), provider_message_id: z.string().nullable(), error: z.string().nullable(), sent_at: z.string().datetime().nullable(), created_at: z.string().datetime() })
+   - ReceiptHistoryResponseSchema = z.object({ entries: z.array(ReceiptHistoryEntrySchema), total_count: z.number().int() })
+
+3. Create packages/pos-shared/src/settings.ts:
+   - TimezoneSchema = z.enum(['America/Chicago', 'America/New_York', 'America/Los_Angeles', 'America/Phoenix', 'America/Denver', 'Pacific/Honolulu', 'America/Anchorage'])
+   - TenantSettingsSchema = z.object({ id, name, vertical: VerticalSchema, timezone: TimezoneSchema, email_daily_report: z.boolean(), daily_report_recipient_email: z.string().email().nullable() })
+   - LocationSettingsSchema = z.object({ id, tenant_id, name, sales_tax_bps: z.number().int().min(0).max(2000), business_hours: z.unknown().nullable(), address: z.unknown().nullable() })
+   - UpdateTenantSettingsRequestSchema = TenantSettingsSchema.partial().omit({ id: true })
+   - UpdateLocationSettingsRequestSchema = LocationSettingsSchema.partial().omit({ id: true, tenant_id: true })
+
+4. Re-export all from packages/pos-shared/src/index.ts. Rebuild.
+
+═══════════════════════════════════════
+SECTION 2 — Migration 0014 (verify only — likely no DDL needed)
+═══════════════════════════════════════
+
+5. Inspect existing migrations 0001-0013 for:
+   - tenants.email_daily_report and tenants.daily_report_recipient_email — should exist from Migration 0013 (Batch 12)
+   - staff_members.active boolean — may not exist, add if missing (default true)
+   - staff_members has location_ids uuid[] — should exist from foundation migration
+
+6. If any columns are missing, write Migration 0014: 20260502180000_staff_active.sql with the deltas. Otherwise document "no migration needed" in the batch report.
+
+═══════════════════════════════════════
+SECTION 3 — pos-api endpoints
+═══════════════════════════════════════
+
+7. apps/pos-api/src/routes/staff/staff.ts:
+   - GET /v1/staff — session-only owner+manager; returns staff array for tenant (excludes password_hash, pin_hash)
+   - POST /v1/staff — session-only owner+manager; body = InviteStaffRequestSchema; bcrypt-hash PIN if provided; insert staff_members row; audit log 'staff_invited'
+   - PATCH /v1/staff/:id — session-only owner+manager; body = UpdateStaffRequestSchema; tenant-scoped UPDATE; if pin in body, bcrypt-hash; if role changes, audit log 'staff_role_changed'
+   - DELETE /v1/staff/:id — session-only owner+manager; sets active=false (soft-delete pattern); cannot deactivate self (return 400 with code 'cannot_deactivate_self'); cannot deactivate the last owner (return 400 with code 'last_owner')
+   - All routes attach IRouter type annotation
+
+8. apps/pos-api/src/routes/receipts/history.ts:
+   - GET /v1/receipts — session-only owner+manager
+   - Query params: limit (default 50, max 200), offset (default 0), channel (optional 'email'|'sms'), status (optional)
+   - Returns ReceiptHistoryResponseSchema with both email_messages + sms_messages joined to orders
+   - SQL approach: union the two tables with a `channel` discriminator column, join orders for order_number + total, paginate
+   - Response shape includes total_count for pagination UI
+
+9. apps/pos-api/src/routes/settings/index.ts:
+   - GET /v1/settings — session-only owner+manager; returns { tenant: TenantSettings, locations: LocationSettings[] }
+   - PATCH /v1/settings/tenant — session-only owner only (manager cannot change tenant settings); body = UpdateTenantSettingsRequestSchema; update tenants row; audit 'tenant_settings_updated' with old+new values in payload
+   - PATCH /v1/settings/locations/:id — session-only owner+manager; body = UpdateLocationSettingsRequestSchema; tenant-scoped update; audit log
+
+10. Add audit log entries for every mutation across all three new endpoints. Sensitive fields (PIN hashes, email opt-out) get redacted in audit payload — only "field changed" not "old/new value."
+
+═══════════════════════════════════════
+SECTION 4 — pos-admin: staff page
+═══════════════════════════════════════
+
+11. apps/pos-admin/src/app/staff/page.tsx — replace placeholder; server component:
+    - Fetch /v1/staff
+    - Render <StaffList initialStaff={staff} />
+
+12. apps/pos-admin/src/components/staff/StaffList.tsx (client):
+    - Header: "Staff" + "Invite Staff" button (right-aligned, brand-blue)
+    - Table: full_name | role badge | email | PIN status (set / not set) | active toggle | actions (edit + deactivate)
+    - Active toggle calls PATCH /v1/staff/:id with { active }
+    - Click row → opens InviteStaffDialog in edit mode
+    - Empty state: "No staff yet — invite your first cashier"
+
+13. apps/pos-admin/src/components/staff/InviteStaffDialog.tsx:
+    - Mode: invite or edit
+    - Fields: full_name, email, role (select: owner / manager / cashier), location_ids (multi-select for tenants with multiple locations), PIN (4-digit numeric, only required for cashiers)
+    - On invite: POST /v1/staff
+    - On edit: PATCH /v1/staff/:id
+    - On error 400 last_owner: show "Cannot deactivate the last owner" inline
+    - On error 400 cannot_deactivate_self: show "You cannot deactivate yourself"
+
+14. Add api-client wrapper: apps/pos-admin/src/lib/api/staff.ts with getStaff, createStaff, updateStaff, deactivateStaff.
+
+═══════════════════════════════════════
+SECTION 5 — pos-admin: receipts history page
+═══════════════════════════════════════
+
+15. apps/pos-admin/src/app/receipts/page.tsx — replace placeholder; server component:
+    - Read ?page=N from search params; default 1
+    - Fetch /v1/receipts?limit=50&offset={(page-1)*50}
+    - Render <ReceiptsHistory entries={...} total={...} page={page} />
+
+16. apps/pos-admin/src/components/receipts/ReceiptsHistory.tsx (client):
+    - Filters bar: channel select (all / email / sms), status select (all / queued / sent / failed / bounced)
+    - Filter changes navigate via router.push with new query params
+    - Table: created_at | order # | channel badge | recipient (email or phone) | status badge | provider_message_id (click-to-copy) | actions
+    - Status badges color-coded: gray queued, green sent, red failed, orange bounced
+    - Action: "Resend" button per row → calls POST /v1/orders/:id/receipts with the same recipient (email or phone)
+    - On resend success: toast "Receipt resent — check status above"
+    - Pagination: prev / next buttons at bottom; total_count drives count
+    - Empty state: "No receipts yet"
+
+═══════════════════════════════════════
+SECTION 6 — pos-admin: settings page
+═══════════════════════════════════════
+
+17. apps/pos-admin/src/app/settings/page.tsx — replace placeholder; server component:
+    - Fetch /v1/settings (tenant + locations)
+    - Render <SettingsPage data={settings} />
+
+18. apps/pos-admin/src/components/settings/SettingsPage.tsx (client):
+    - Two sections, each in a card:
+    
+    **Tenant** (only owners can edit; manager sees read-only view):
+    - Business name (text)
+    - Vertical (read-only display, "Cafe" or "Restaurant" — vertical change is a destructive operation; defer to support flow for now)
+    - Timezone (select with US zones from pos-shared TimezoneSchema)
+    - Email daily report (toggle + recipient email field; recipient defaults to owner's email if blank)
+    - "Save Tenant Settings" button → PATCH /v1/settings/tenant
+    
+    **Location** (each location in a sub-card; owner+manager can edit):
+    - Name (text)
+    - Sales tax (% input, converts to bps; e.g., 8.25 → 825)
+    - Business hours (placeholder for now — show "Coming soon" inside the card; this is a complex form, defer)
+    - "Save Location Settings" button per location
+
+19. Add api-client wrapper: apps/pos-admin/src/lib/api/settings.ts.
+
+═══════════════════════════════════════
+SECTION 7 — Tests
+═══════════════════════════════════════
+
+20. apps/pos-api/src/routes/staff/staff.test.ts:
+    - Skip-graceful integration tests (need Supabase): full CRUD round-trip, last-owner-protection, cannot-deactivate-self
+    - Unit tests (always run): InviteStaffRequestSchema validation; PIN regex; auth guards return 401/403 correctly
+
+21. apps/pos-api/src/routes/receipts/history.test.ts:
+    - Skip-graceful integration: returns paginated rows; channel filter works; status filter works
+    - Unit: ReceiptHistoryResponseSchema validation; auth guards
+
+22. apps/pos-api/src/routes/settings/settings.test.ts:
+    - Skip-graceful integration: GET returns tenant + locations; PATCH tenant updates name; PATCH location updates sales_tax_bps; manager cannot PATCH tenant settings (403)
+    - Unit: TenantSettings schema validation; sales_tax_bps clamped to 0..2000
+
+═══════════════════════════════════════
+SECTION 8 — Documentation + commit
+═══════════════════════════════════════
+
+23. Update apps/pos-api/README.md routes table:
+    - GET /v1/staff, POST /v1/staff, PATCH /v1/staff/:id, DELETE /v1/staff/:id
+    - GET /v1/receipts
+    - GET /v1/settings, PATCH /v1/settings/tenant, PATCH /v1/settings/locations/:id
+
+24. Update apps/pos-admin/README.md:
+    - /staff (list + invite + role change + deactivate)
+    - /receipts (paginated history + resend)
+    - /settings (tenant + locations form)
+    - Note that admin app is feature-complete for MVP after this batch
+
+25. From root: pnpm install, pnpm -F @nuatis/pos-shared build, pnpm -F @nuatis/pos-admin typecheck, pnpm -F @nuatis/pos-api typecheck + test.
+
+26. Commit + push:
+    - git add .
+    - git commit -m "feat(admin): staff + receipts history + tenant settings — admin MVP complete"
+    - git push origin main
+
+SCOPE — DO NOT BUILD
+- Do NOT add invitation email send (deferred to MVP polish; for now PIN/password is owner-set in invite dialog)
+- Do NOT add password reset flow (deferred)
+- Do NOT add audit log viewer page (admin can query DB directly for MVP)
+- Do NOT add 2FA / TOTP for owner accounts (deferred)
+- Do NOT add bulk operations (bulk-deactivate, bulk-role-change)
+- Do NOT add receipt webhook handlers (Resend bounce / Telnyx delivery webhooks — deferred)
+- Do NOT add business hours editor — show "Coming soon" placeholder
+- Do NOT add Stripe Connect onboarding banner (Batch 17 territory)
+- Do NOT add multi-vertical mid-flight migration (vertical change deferred to support flow)
+- Do NOT modify cron/queue logic
+- Do NOT touch artifacts/, prototype, supabase migrations beyond 0014 if needed
+
+TECH CONSTRAINTS
+- All endpoints follow Express Router IRouter annotation pattern
+- All admin → pos-api calls go through /api/v1/[...path]/route.ts proxy
+- Schema validation on every endpoint via pos-shared Zod schemas
+- bcrypt cost 12 for passwords, cost 10 for PINs
+- Audit log entries fire-and-forget (don't block response)
+- Manager cannot edit tenant settings (only owner) — enforced via requireRole(['owner']) on the PATCH route
+- Self-deactivation prevented at endpoint level
+- Last-owner protection: count(*) where role='owner' AND active=true GROUP BY tenant_id; if 1, deny
+- All money: cents in API, dollars in UI
+- All percentages: bps in API, % in UI (e.g., 825 → 8.25%)
+- Tabular-nums for all numeric columns
+- Workspace deps via 'workspace:*'
+
+ACCEPTANCE
+1. /staff page lists staff with role badges and active toggles
+2. Invite Staff modal creates a new cashier with PIN
+3. Cannot deactivate self — error visible
+4. Cannot deactivate last owner — error visible
+5. /receipts page lists email + SMS history with status badges
+6. Filter by channel + status works via URL state
+7. Resend button on a row triggers a new send job
+8. /settings page renders tenant + location sections
+9. Manager sees tenant settings as read-only
+10. Owner can edit tenant name + timezone + email_daily_report toggle
+11. Both owner + manager can edit location sales_tax_bps
+12. Migration 0014 either added or "not needed" documented
+13. pnpm typecheck across all 3 apps → 0 errors
+14. pnpm test → preserves baseline (115 pass) + new staff/receipts/settings tests pass; integration tests skip-graceful
+15. git status clean, commit pushed
+
+HARD STOP
+Stop after scope. Report:
+- File counts (admin app deltas + pos-api deltas)
+- Migration 0014 delta (or "not needed")
+- Test counts (pass/skip/fail)
+- TS workarounds (especially around the Tenant + Location nested fetch and the Resend action button calling /v1/orders/:id/receipts with stored recipient)
+- Confirm migrations 0001-0013 untouched (and 0014 if added)
+- Confirm prototype + supabase/ untouched (except 0014 if needed)
+- Open questions for Batch 17 (Stripe Terminal real integration — Stripe Connect Standard onboarding banner in admin, real PaymentIntent flow replacing card_mock, terminal pairing UI in /devices route, webhook handler for payment_intent.succeeded; AND/OR remaining Phase 0 production polish — error states for network failures, Sentry wiring, Vercel/Replit deployment config)
+
+Wait for next prompt.

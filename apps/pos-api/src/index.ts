@@ -14,7 +14,10 @@ import { ordersRouter } from "./routes/orders/index.js";
 import { cashRouter } from "./routes/cash/index.js";
 import { reportsRouter } from "./routes/reports/index.js";
 import { receiptViewRouter } from "./routes/receipts/index.js";
+import { receiptHistoryRouter } from "./routes/receipts/history.js";
 import { locationsRouter } from "./routes/locations/index.js";
+import { staffRouter } from "./routes/staff/staff.js";
+import { settingsRouter } from "./routes/settings/index.js";
 import { startReceiptEmailWorker } from "./workers/receipt-email.js";
 import { startReceiptSmsWorker } from "./workers/receipt-sms.js";
 import { startEodRollupWorker } from "./workers/end-of-day-rollup.js";
@@ -61,6 +64,9 @@ app.use("/v1/orders", ordersRouter);
 app.use("/v1/cash", cashRouter);
 app.use("/v1/reports", reportsRouter);
 app.use("/v1/locations", locationsRouter);
+app.use("/v1/staff", staffRouter);
+app.use("/v1/receipts", receiptHistoryRouter);
+app.use("/v1/settings", settingsRouter);
 // Public receipt view — no auth, signed token required
 app.use("/r", receiptViewRouter);
 
