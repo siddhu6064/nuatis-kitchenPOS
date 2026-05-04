@@ -1,0 +1,124 @@
+▶ PROMPT [Phase 8 · Batch 25 · Replit Agent]
+
+CONTEXT
+- Code is feature-complete for cafe pilot, but cashier UX lives in artifacts/nuatis-pos
+  (the prototype testbed) and isn't deployable. The originally-specced web terminal at
+  apps/pos-admin/app/t was never built; locked decision parks that for the apps/pos-terminal
+  RN rebuild at P9.
+- Three originally-specced P5/P6 MVP items remain unfinished in the prototype:
+  · Tip preset UI before PaymentIntent capture (checklist line 484)
+  · Reader disconnect handling with retry loop (line 486)
+  · Manager-PIN-gated Open Drawer / no-sale button on cashier surface (line 541)
+- These complete the original MVP cashier flow — they are NOT new prototype features. The
+  "no new prototype features" rule still applies to genuine scope creep (inventory,
+  catalog editing, etc.).
+- 217 tests pass.
+
+GOAL
+Make artifacts/nuatis-pos pilot-deployable as the cashier surface. Demo: deploy prototype
+to Vercel as terminal.nuatis.com; cashier signs in with PIN; rings 3-item ticket; selects
+20% tip preset; if reader disconnects mid-payment, retry loop recovers gracefully; manager
+opens cash drawer with PIN to make change for a customer.
+
+SCOPE — BUILD THIS
+1. Vercel deploy config for artifacts/nuatis-pos
+   - artifacts/nuatis-pos/vercel.json: framework=vite, build command, output directory
+   - artifacts/nuatis-pos/.env.example: VITE_API_BASE (default http://localhost:3002 in
+     dev; prod points to api.nuatis.com or wherever pos-api lives)
+   - Add a "Deployment" section to artifacts/nuatis-pos/README.md with the Vercel CLI
+     steps mirroring apps/pos-admin/README.md (link, env vars, deploy, custom domain)
+
+2. Tip preset chip UI in Tap-to-Pay flow
+   - Before terminal.collectPaymentMethod() fires, render a tip preset row: 18% / 20% /
+     25% / Custom / No Tip
+   - 18% / 20% / 25% computed against subtotal (not subtotal+tax — match standard US
+     restaurant convention)
+   - Custom opens a number-pad modal accepting cents input
+   - No Tip = 0
+   - Selection updates the displayed total before card present, then included in the
+     PaymentIntent amount when payment intent is created
+
+3. API support for tip at intent creation
+   - Verify POST /v1/orders/:id/payments card_stripe branch accepts tip_cents in the
+     request body
+   - If yes — confirm and add unit test
+   - If no — add it, validate non-negative + ≤ 50% of subtotal, persist on payment row at
+     creation time, included in PaymentIntent amount calculation
+   - Per locked convention: tip stored on payment row, copied to order on confirm
+
+4. Reader disconnect handling in StripeTerminalProvider
+   - Subscribe to terminal's reader-disconnect event
+   - On disconnect: show user-facing alert "Card reader disconnected. Reconnecting…"
+   - Auto-retry connection: 5 attempts with backoff 1s, 2s, 4s, 8s, 16s
+   - On reconnect success: dismiss alert, allow flow to continue
+   - On exhaustion: persistent error banner with manual "Retry" button; log warn-level
+     to console (Sentry pickup will happen at server boundary, not client-side)
+   - If disconnect happens mid-collection: cancel the in-flight PaymentIntent (call
+     stripe.paymentIntents.cancel via pos-api), return to cart screen with toast
+     "Payment canceled — reader lost"
+
+5. Open Drawer button on prototype POS
+   - Visible to signed-in cashier only when there's an active cash_drawer_session for
+     the location (fetch session status on screen mount; refresh on focus)
+   - Tap → reuse existing manager PIN modal → on PIN success, POST to
+     /v1/cash/sessions/:id/events with body { event_type: 'no_sale', reason: 'Drawer
+     opened from terminal' }
+   - Endpoint already exists from B10 with manager PIN gate + audit log write
+   - Show toast on success; error toast on 4xx
+
+6. Tests
+   - Tip preset selection: 20% on $10 subtotal → tip_cents = 200 in PaymentIntent payload
+   - Custom tip: $1.50 input → tip_cents = 150
+   - No Tip: tip_cents = 0
+   - Reader disconnect retry exhaustion: 5 failures → persistent error banner rendered
+   - Open Drawer with no active session: button hidden (DOM assertion)
+   - Open Drawer with wrong PIN: error toast (401 or 403 from API; existing pattern)
+
+SCOPE — DO NOT BUILD
+- New cashier features beyond P5/P6 originally-specced items
+- Discount application from cashier surface (admin only — pos-terminal P9 owns this)
+- Refund from cashier surface (admin only)
+- /t route in pos-admin (locked decision: P9 RN rebuild)
+- Database migrations
+- Stripe webhook changes
+- New env vars beyond VITE_API_BASE
+- Heartbeat / online-status (P9)
+- Sentry wiring inside the prototype (server captures at API boundary; client errors
+  defer until P9 rebuild has its own Sentry)
+- Anything in apps/pos-admin or apps/pos-api beyond the tip_cents API verification
+
+TECH CONSTRAINTS
+- All money in cents (int)
+- Tip stored on payment row at intent creation, copied to order on confirm (existing
+  convention)
+- Reader disconnect detection via the existing StripeTerminalProvider event hooks
+- Manager PIN modal: reuse existing component, do not duplicate
+- Vite SPA, no SSR
+- VITE_API_BASE env var pattern; default localhost:3002 in dev
+- ESM imports with .js suffix on internal imports
+- 18% / 20% / 25% calculated against subtotal_cents (not subtotal + tax)
+- Tip cap at 50% of subtotal (validation in API; UI shows warning at 100%+)
+
+ACCEPTANCE
+- pnpm test passes (217+; expect 5-8 new tests)
+- pnpm typecheck clean across pos-api, pos-admin, pos-shared, prototype
+- vercel.json valid; `vite build` from artifacts/nuatis-pos succeeds locally with
+  VITE_API_BASE=https://api.example.com set
+- Tip preset chips render in correct order; selection updates total display + intent amount
+- Reader disconnect simulated via StripeTerminalProvider's test hook → retry loop runs
+  → after 5 failures shows persistent error
+- Open Drawer button hidden when no active cash session; visible when active; PIN flow
+  works; logs no_sale event in audit_log
+- README.md Deployment section walks through vercel link → env vars → vercel --prod →
+  custom domain CNAME
+
+HARD STOP
+After scope is complete, STOP. Do not offer P9 rebuild, /t in pos-admin, discount or
+refund from terminal, or new features. Report:
+- Summary of what shipped
+- Whether tip_cents API support already existed or had to be added
+- Test count delta
+- Errors or skipped items
+- Open questions
+
+Wait for next prompt.
